@@ -51,12 +51,25 @@ class UInputMouse:
 
     @position.setter
     def position(self, xy):
+        self._move(xy, force=False)
+
+    def hold(self, xy):
+        """Put the cursor back on xy even if the physical mouse moved it away."""
+        self._move(xy, force=True)
+
+    def _move(self, xy, force):
         x, y = xy
         s = self.screen
         ax = int(round((x - s.x) / max(1, s.w - 1) * ABS_MAX))
         ay = int(round((y - s.y) / max(1, s.h - 1) * ABS_MAX))
         ax, ay = min(max(ax, 0), ABS_MAX), min(max(ay, 0), ABS_MAX)
         with self.lock:
+            if force:
+                # the kernel drops ABS events equal to the previous value: nudge by 1 unit
+                # (1/32767 of the screen, invisible) so the compositor gets a fresh position
+                self.ui.write(self.e.EV_ABS, self.e.ABS_X, ax - 1 if ax > 0 else ax + 1)
+                self.ui.write(self.e.EV_ABS, self.e.ABS_Y, ay - 1 if ay > 0 else ay + 1)
+                self.ui.syn()
             self.ui.write(self.e.EV_ABS, self.e.ABS_X, ax)
             self.ui.write(self.e.EV_ABS, self.e.ABS_Y, ay)
             self.ui.syn()
@@ -96,6 +109,10 @@ class PynputMouse:
     @position.setter
     def position(self, xy):
         self.c.position = xy
+
+    def hold(self, xy):
+        if tuple(self.c.position) != tuple(xy):
+            self.c.position = xy
 
     def press(self, _button=None):
         self.c.press(self.left)

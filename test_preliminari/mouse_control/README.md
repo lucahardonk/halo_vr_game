@@ -2,11 +2,19 @@
 
 ## Cosa fa
 
-`mouse_control.py` trasforma un AprilTag **tag36h11** in un puntatore: la Kinect v1 inquadra il tag,
-la posizione X/Y del tag (in metri, sistema camera) viene convertita in coordinate schermo con
-un'**omografia** calcolata da 5–8 punti di calibrazione, e il cursore del mouse lo segue.
-Avvicinando il tag alla camera si **tiene premuto il tasto sinistro**, allontanandolo si rilascia.
-Un piccolo HUD in alto a destra mostra stato, angolo di rotazione del tag, distanza Z, stato del click e FPS.
+`mouse_control.py` trasforma un AprilTag **tag36h11** in un puntatore tipo **laser**: la Kinect v1
+vede il tag e lo script calcola dove il "raggio" del tag (la sua normale) incontra il piano
+dello schermo. Il punto viene convertito in pixel con le **omografie** di calibrazione e il cursore lo segue.
+
+- **Posizione**: spostando il tag il cursore si muove.
+- **Angolo**: inclinando il tag il cursore si sposta tanto più quanto più sei lontano
+  (spostamento ≈ distanza · tan(inclinazione)), come un puntatore laser.
+- **Distanza**: avvicinando il tag alla camera si **tiene premuto il tasto sinistro**, allontanandolo si rilascia.
+
+Si ipotizza che la Kinect stia **sul monitor** (piano dello schermo = piano della camera). Se sta
+più avanti o più indietro, correggi con `--screen-offset` (metri, positivo = schermo dietro la Kinect).
+
+Un piccolo HUD in alto a destra mostra stato, rotazione e inclinazione del tag, distanza Z, click e FPS.
 
 ## Installazione
 
@@ -65,37 +73,46 @@ Su **X11** ("Ubuntu su Xorg") questo passo non serve: lo script usa pynput.
    cd ~/Documents/halo_vr_game/test_preliminari/mouse_control
    python mouse_control.py --tag-size 0.065
    ```
-4. **Calibra**: compare un overlay scuro a tutto schermo con un cerchio giallo, e **il cursore
-   salta sul cerchio** (se non si muove, il backend mouse non funziona: guarda la riga `mouse:` nell'HUD
-   e "Problemi comuni"). In basso a destra c'è l'anteprima della camera (specchiata) e sullo schermo
-   un **mirino** che indica dove si trova il tag nell'inquadratura (verde = pronto, arancione = allontana il tag).
-   - Porta il tag nella posizione che vuoi far corrispondere a quel punto dello schermo, tenendolo **lontano** (Z > 0.50 m).
-   - **Avvicinalo** alla camera (Z < 0.40 m) e tienilo lì per 0.15 s: l'anello verde si completa, il punto
-     diventa verde e si passa al successivo. Viene salvata la posizione mediana del tag durante la tenuta.
-   - Allontana di nuovo il tag (Z > 0.50 m) prima del punto successivo.
-   - **Salta** salta un punto difficile da raggiungere (torna in coda più tardi).
-5. **Conferma**: dopo 5 punti si abilita **Conferma**; con 8 punti la calibrazione si chiude da sola.
-   Lo script passa in **ACTIVE** e il cursore segue il tag.
+4. **Calibra** con il tag **dritto** (rivolto verso la camera, non inclinato). Compare un overlay
+   scuro con un cerchio colorato, e **il cursore viene tenuto sul cerchio** (se non c'è, il backend
+   mouse non funziona: guarda la riga `mouse:` nell'HUD e "Problemi comuni"). In basso a destra
+   c'è l'anteprima della camera (specchiata), sullo schermo un **mirino** dove sta il tag
+   (verde = visto, arancione = non visto).
 
-> Dopo la calibrazione (e dopo ogni ripresa con INVIO) il click si abilita solo quando il tag
-> è stato allontanato oltre `--click-far` almeno una volta, così non parte un click involontario.
+   **Set 1/2 – LONTANO** (cerchio giallo): tieni il tag alla distanza a cui lo userai normalmente,
+   spostalo nella posizione che vuoi far corrispondere al cerchio e premi **INVIO** (oppure il
+   pulsante *Salva punto*). Il punto diventa verde e si passa al successivo. Fai 5–8 punti.
+
+   **Set 2/2 – VICINO** (cerchio blu): stessa cosa, ma con il tag **avvicinato alla camera** come
+   quando vuoi cliccare (almeno 4 cm più vicino del set lontano, altrimenti il punto viene rifiutato).
+
+   - **Salta**: salta un punto scomodo (torna in coda).
+   - **Conferma set**: chiude il set dopo almeno 5 punti; con 8 punti si chiude da solo.
+   - INVIO senza tag visibile non salva niente (lo dice l'overlay).
+5. Finiti i due set lo script calcola le **soglie del click** dalle due distanze (premuto al 40%
+   del tratto dal VICINO al LONTANO, rilasciato al 70%) e passa in **ACTIVE**.
+
+> Dopo la calibrazione (e dopo ogni ripresa) il click si abilita solo quando il tag
+> è stato portato oltre la soglia di rilascio almeno una volta, così non parte un click involontario.
 
 ## Controllo
 
 | Azione | Effetto |
 |--------|---------|
-| Tag vicino (Z < `--click-near`, default 0.40 m) | tiene premuto il tasto sinistro (trascinamento possibile) |
-| Tag lontano (Z > `--click-far`, default 0.50 m) | rilascia il tasto sinistro |
+| Tag inclinato oltre la zona morta (default 10°) | il cursore si sposta come un raggio laser |
+| Tag avvicinato (soglia dalla calibrazione, scritta nell'HUD) | tiene premuto il tasto sinistro (trascinamento possibile) |
+| Tag allontanato | rilascia il tasto sinistro |
 | Tag non visto per più di 0.5 s | rilascia il tasto (sicurezza) |
-| **Spazio** | FROZEN: rilascia il tasto, il mouse torna libero, puoi spostare il tag |
-| **Invio** | riprende (ACTIVE) dalla posizione attuale del cursore, angolo riazzerato |
+| **Invio** (in calibrazione) | salva il punto evidenziato |
+| **Spazio** | FERMO: il cursore resta fermo dov'è e il tasto viene rilasciato; riposiziona il tag |
+| **Spazio** o **Invio** (da FERMO) | riprende dal punto in cui il cursore era fermo, rotazione riazzerata |
 | **c** | ricomincia la calibrazione |
 | **q** / **Esc** | esce (il tasto viene sempre rilasciato) |
 
 Spazio + Invio funzionano come "sollevare il mouse dal tappetino": riprendendo, il cursore
 continua dall'ultima posizione impostata dal tag, con l'offset ricalcolato rispetto alla nuova
 posizione del tag. Su Wayland la posizione reale del cursore non è leggibile: se in FROZEN muovi
-il mouse fisico, alla ripresa il cursore torna dove l'aveva lasciato il tag.
+il mouse fisico, lo script lo riporta subito al punto fermo (il cursore è "suo" finché lo script gira).
 
 I tasti sono globali: funzionano anche se la finestra in primo piano è un'altra. **Non vengono
 bloccati**: lo Spazio scrive anche uno spazio nell'app in primo piano, e `q`/`c` agiscono sullo
@@ -103,10 +120,17 @@ script anche mentre scrivi altrove. Funzionano inoltre su HUD e finestra camera.
 
 ## Angolo
 
-L'HUD mostra `↺ XX.X°`: è la rotazione del tag **attorno al proprio asse Z** (come girare una
-manopola), **relativa** all'orientamento che il tag aveva alla fine della calibrazione o
-all'ultima ripresa con INVIO (`R_rel = R0ᵀ · R`). Non dipende dalla posizione del tag:
-spostandolo nello spazio senza ruotarlo l'angolo resta ~0°.
+L'HUD mostra due valori:
+
+- `↺ XX.X°`: rotazione del tag **attorno al proprio asse Z** (come girare una manopola), relativa
+  all'orientamento a fine calibrazione o all'ultima ripresa. Non dipende dalla posizione.
+- `incl XX°`: quanto il tag è inclinato rispetto alla direzione della camera; è questo che sposta il raggio.
+
+**Zona morta**: con un tag piccolo la stima dell'orientamento è rumorosa. In simulazione, con un
+tag perfettamente dritto da 6,5 cm a 0,7 m, l'errore arrivava a **8°**: senza zona morta il cursore
+ballerebbe di un terzo dello schermo. Per questo i primi `--tilt-deadzone` gradi (default 10°) sono
+ignorati e conta solo l'eccesso, senza scatti. Con un tag più grande (es. 15 cm stampato) il rumore
+cala e puoi abbassare la zona morta.
 
 ## Problemi comuni
 
@@ -118,7 +142,10 @@ spostandolo nello spazio senza ruotarlo l'angolo resta ~0°.
 | Cursore mappato male con più monitor | il mouse virtuale copre l'intero desktop: usa un solo monitor per il test |
 | Alternativa a uinput | sessione **"Ubuntu su Xorg"** al login, poi `python mouse_control.py --mouse pynput --keys pynput` |
 | `freenect_sync_get_video failed` | la Kinect è occupata (dashboard `1_kinect_dashboard`, `freenect-glview`, `apriltag_pose.py`): chiudili; controlla alimentatore e USB |
-| Click che parte da solo o non parte mai | regola le soglie guardando `Z:` nell'HUD, es. `--click-near 0.35 --click-far 0.45`; tieni almeno 5–10 cm di isteresi |
+| Click che parte da solo o non parte mai | ricalibra (`c`) con il set VICINO più vicino; oppure forza le soglie guardando `Z:` nell'HUD, es. `--click-near 0.35 --click-far 0.45` |
+| Il cursore trema quando inclini | aumenta `--tilt-deadzone` (es. 15) o riduci `--tilt-gain` (es. 0.5); `--tilt-gain 0` = solo posizione |
+| Inclinando il cursore va troppo / troppo poco | la Kinect non è sul piano dello schermo: regola `--screen-offset` (es. 0.2 se lo schermo è 20 cm dietro) o `--tilt-gain` |
+| `Ignoring XDG_SESSION_TYPE=wayland on Gnome` | avviso di Qt (finestra camera OpenCV): lo script ora forza `QT_QPA_PLATFORM=xcb`, quindi non dovrebbe più comparire; è innocuo |
 | Cursore che trema | allontana meno il tag, migliora la luce, stampa un tag più grande; il filtro One-Euro (`FILTER_MIN_CUTOFF` in cima al file) si può abbassare |
 | Calibrazione imprecisa ai bordi | usa tutti gli 8 punti e copri un'area ampia con il tag; ricalibra con `c` |
 | Overlay non trasparente | serve un compositor (GNOME lo ha); la calibrazione funziona lo stesso |
@@ -132,9 +159,11 @@ spostandolo nello spazio senza ruotarlo l'angolo resta ~0°.
 | `--tag-size` | 0.065 | lato del quadrato nero del tag, in metri |
 | `--index` | 0 | indice Kinect |
 | `--opencv N` | — | usa la webcam OpenCV N al posto della Kinect |
-| `--click-near` | 0.40 | Z (m) sotto cui il tasto sinistro viene premuto |
-| `--click-far` | 0.50 | Z (m) sopra cui il tasto viene rilasciato (deve essere > `--click-near`) |
-| `--click-hold` | 0.15 | secondi sotto `--click-near` per registrare un punto di calibrazione |
+| `--click-near` | dalla calibrazione | forza la Z (m) sotto cui il tasto sinistro viene premuto |
+| `--click-far` | dalla calibrazione | forza la Z (m) sopra cui il tasto viene rilasciato |
+| `--screen-offset` | 0.0 | Z del piano dello schermo nel sistema camera (m); 0 = Kinect sul monitor |
+| `--tilt-gain` | 1.0 | quanto l'inclinazione sposta il cursore (0 = solo posizione, 1 = raggio vero) |
+| `--tilt-deadzone` | 10 | gradi di inclinazione ignorati (rumore della posa) |
 | `--decimate` | 1.0 | `quad_decimate` del detector (2.0 = più veloce, portata minore) |
 | `--threads` | 4 | thread del detector |
 | `--no-display` | — | nessuna finestra camera, solo HUD |
