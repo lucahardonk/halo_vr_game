@@ -1,0 +1,5 @@
+numpy
+opencv-contrib-python>=4.8,<5
+pupil-apriltags>=1.0.4
+pynput>=1.7
+screeninfo>=0.8
