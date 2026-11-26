@@ -11,7 +11,7 @@
     .card-header { background: #222935; font-weight: 600; letter-spacing: .02em; }
     #statusbar { background: #0c0e12; border-bottom: 1px solid #2a313c; }
     #statusbar .badge { font-size: .8rem; font-weight: 500; }
-    .stream { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; display: block; }
+    .stream { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
     .val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .led-btn { width: 100%; }
     .dot { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .3em; }
@@ -30,10 +30,7 @@
     <strong class="me-2">Kinect v1 Dashboard</strong>
     <span id="st-socket" class="badge text-bg-secondary">Socket: ...</span>
     <span id="st-kinect" class="badge text-bg-secondary">Kinect: ...</span>
-    <span class="badge text-bg-dark">RGB <span id="st-fps-rgb" class="val">0</span> fps</span>
-    <span class="badge text-bg-dark">IR <span id="st-fps-ir" class="val">0</span> fps</span>
-    <span class="badge text-bg-dark">Depth <span id="st-fps-depth" class="val">0</span> fps</span>
-    <span class="badge text-bg-dark">Accel <span id="st-fps-accel" class="val">0</span> Hz</span>
+    <span class="badge text-bg-dark">FPS: <span id="st-fps-rgb" class="val">0</span> RGB / <span id="st-fps-ir" class="val">0</span> IR / <span id="st-fps-depth" class="val">0</span> Depth / <span id="st-fps-accel" class="val">0</span> Hz Accel</span>
     <span class="badge text-bg-dark">Tilt <span id="st-tilt" class="val">--</span>&deg;</span>
     <span class="badge text-bg-dark">Accel <span id="st-accel" class="val">--</span></span>
     <span class="badge text-bg-dark">Mic <span id="st-mic" class="val">--</span></span>
@@ -44,7 +41,7 @@
   <div class="container-fluid py-3">
     <div class="row g-3">
       <!-- LEFT: controls -->
-      <div class="col-xl-3 col-lg-4">
+      <div class="col-12 col-lg-4 col-xl-3">
         <div class="card mb-3">
           <div class="card-header">Motore tilt</div>
           <div class="card-body">
@@ -68,7 +65,7 @@
           </div>
         </div>
 
-        <div class="card mb-3">
+        <div class="card">
           <div class="card-header">LED</div>
           <div class="card-body">
             <div class="row g-2">
@@ -82,18 +79,10 @@
             <div class="small text-secondary mt-2">LED attuale: <span id="led-current" class="val">--</span></div>
           </div>
         </div>
-
-        <div class="card">
-          <div class="card-header">Profondit&agrave;</div>
-          <div class="card-body">
-            Distanza al centro (mirino): <span id="center-depth" class="val fs-5">--</span> m
-            <div class="small text-secondary">Range utile Kinect v1: 0.8 &ndash; 3.5 m. Nero = nessun dato.</div>
-          </div>
-        </div>
       </div>
 
       <!-- CENTER: streams -->
-      <div class="col-xl-5 col-lg-8">
+      <div class="col-12 col-lg-8 col-xl-6">
         <div class="card mb-3">
           <div class="card-header d-flex align-items-center">
             <span class="me-auto">Camera video</span>
@@ -104,17 +93,27 @@
               <label class="btn btn-outline-info" for="vmode-ir">IR</label>
             </div>
           </div>
-          <img id="video-img" class="stream" src="/video_rgb" alt="RGB/IR stream">
-          <div class="card-footer small text-secondary">RGB e IR condividono lo stesso sensore: la Kinect v1 ne trasmette uno alla volta.</div>
+          <div class="ratio ratio-4x3">
+            <img id="video-img" class="stream" src="/video_rgb" alt="RGB/IR stream">
+          </div>
+          <div class="card-body py-2">
+            <div class="small text-muted">RGB e IR condividono lo stesso sensore: la Kinect v1 ne trasmette uno alla volta.</div>
+          </div>
         </div>
         <div class="card">
           <div class="card-header">Profondit&agrave; (colormap JET: rosso = vicino, blu = lontano)</div>
-          <img id="depth-img" class="stream" src="/video_depth" alt="Depth stream">
+          <div class="ratio ratio-4x3">
+            <img id="depth-img" class="stream" src="/video_depth" alt="Depth stream">
+          </div>
+          <div class="card-body py-2">
+            Distanza al centro (mirino): <span id="center-depth" class="val fs-5">--</span> m
+            <div class="small text-muted">Range utile Kinect v1: 0.8 &ndash; 3.5 m. Nero = nessun dato.</div>
+          </div>
         </div>
       </div>
 
       <!-- RIGHT: accelerometer + mic -->
-      <div class="col-xl-4 col-lg-12">
+      <div class="col-12 col-lg-12 col-xl-3">
         <div class="card mb-3">
           <div class="card-header">Accelerometro (m/s&sup2;, ultimi 5 s)</div>
           <div class="card-body">

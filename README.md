@@ -49,6 +49,7 @@ python apriltag_pose.py
 ## Troubleshooting rapido
 | Problema | Soluzione |
 |---|---|
+| Tutto funziona | Kinect collegata direttamente al PC (non hub), firmware audio installato con MD5 aggiornato |
 | `freenect: cannot find libfreenect` | `sudo apt install libfreenect-dev` |
 | `usb_open error: insufficient permissions` | Aggiungi udev rules (vedi Setup), logout/login |
 | `No Kinect device found` | `lsusb` → cerca `045e:02ae`; prova `sudo freenect-glview` |

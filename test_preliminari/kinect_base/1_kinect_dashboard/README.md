@@ -83,6 +83,8 @@ Opzioni:
 7. **Microfoni**: batti le mani o parla a sinistra e a destra del sensore → la freccia ruota
    (±50°) e si allunga quando la confidenza è alta. Se va dal lato opposto attiva **inverti**.
 
+> Tutti e 6 gli stream (RGB/IR, depth, accelerometro, microfono, LED, tilt) funzionano. La dashboard è stata testata su NUC13 con Kinect v1 collegata direttamente alla porta USB del PC.
+
 ## API
 
 | Metodo | Endpoint | Body JSON | Risposta |
