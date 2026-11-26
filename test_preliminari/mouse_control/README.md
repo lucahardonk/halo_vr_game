@@ -65,10 +65,13 @@ Su **X11** ("Ubuntu su Xorg") questo passo non serve: lo script usa pynput.
    cd ~/Documents/halo_vr_game/test_preliminari/mouse_control
    python mouse_control.py --tag-size 0.065
    ```
-4. **Calibra**: compare un overlay scuro a tutto schermo con un cerchio giallo.
+4. **Calibra**: compare un overlay scuro a tutto schermo con un cerchio giallo, e **il cursore
+   salta sul cerchio** (se non si muove, il backend mouse non funziona: guarda la riga `mouse:` nell'HUD
+   e "Problemi comuni"). In basso a destra c'è l'anteprima della camera (specchiata) e sullo schermo
+   un **mirino** che indica dove si trova il tag nell'inquadratura (verde = pronto, arancione = allontana il tag).
    - Porta il tag nella posizione che vuoi far corrispondere a quel punto dello schermo, tenendolo **lontano** (Z > 0.50 m).
    - **Avvicinalo** alla camera (Z < 0.40 m) e tienilo lì per 0.15 s: l'anello verde si completa, il punto
-     diventa verde e si passa al successivo.
+     diventa verde e si passa al successivo. Viene salvata la posizione mediana del tag durante la tenuta.
    - Allontana di nuovo il tag (Z > 0.50 m) prima del punto successivo.
    - **Salta** salta un punto difficile da raggiungere (torna in coda più tardi).
 5. **Conferma**: dopo 5 punti si abilita **Conferma**; con 8 punti la calibrazione si chiude da sola.

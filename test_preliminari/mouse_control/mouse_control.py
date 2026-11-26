@@ -51,7 +51,9 @@ MIN_CALIB_POINTS = 5
 TAG_LOST_RELEASE_S = 0.5
 PREVIEW_SIZE = (480, 360)
 PREVIEW_WINDOW = "mouse_control - camera"
-HUD_W, HUD_H = 200, 170
+HUD_MIN_W = 220
+OVERLAY_PREVIEW = (320, 240)   # camera thumbnail shown inside the calibration overlay
+CALIB_HISTORY_S = 0.6          # tag XY samples kept to register a calibration point (median)
 TICK_MS = 30
 
 # One-Euro filter on the cursor (pixels): lower MIN_CUTOFF = less jitter, more lag
@@ -276,6 +278,9 @@ class MouseTagController:
         self.error = None
         self.message = ""
         self.preview = None
+        self.thumb = None             # small BGR frame for the Tk overlay
+        self.tag_norm = None          # tag centre in the image, normalised 0..1 (mirrored X)
+        self.warp_request = True      # main thread moves the cursor onto the current target
         self.calib_points = [(screen.x + nx * screen.w, screen.y + ny * screen.h) for nx, ny in CALIB_NORM]
         self._reset_calibration()
 
@@ -285,7 +290,9 @@ class MouseTagController:
         self.calib_idx = 0
         self.calib_hold_start = None
         self.calib_armed = False          # tag must be pulled back (Z > far) before a point registers
+        self.calib_hist = []              # (time, x, y) recent tag positions
         self.message = ""
+        self.warp_request = True
 
     def _press(self):
         if not self.pressed:
@@ -332,6 +339,8 @@ class MouseTagController:
     def _calibration_step(self, t, now):
         a = self.args
         z = t[2]
+        self.calib_hist.append((now, float(t[0]), float(t[1])))
+        self.calib_hist = [h for h in self.calib_hist if now - h[0] <= CALIB_HISTORY_S]
         if not self.calib_armed:
             if z > a.click_far:
                 self.calib_armed = True
@@ -341,8 +350,12 @@ class MouseTagController:
             if self.calib_hold_start is None:
                 self.calib_hold_start = now
             elif now - self.calib_hold_start >= a.click_hold:
-                self.calib_registered[self.calib_idx] = (float(t[0]), float(t[1]))
-                print(f"[calib] point {self.calib_idx + 1}: tag ({t[0]:+.3f}, {t[1]:+.3f}) m -> "
+                # median over the hold window: robust to the jitter of the push towards the camera
+                win = [h for h in self.calib_hist if h[0] >= self.calib_hold_start] or self.calib_hist[-1:]
+                mx = float(np.median([h[1] for h in win]))
+                my = float(np.median([h[2] for h in win]))
+                self.calib_registered[self.calib_idx] = (mx, my)
+                print(f"[calib] point {self.calib_idx + 1}: tag ({mx:+.3f}, {my:+.3f}) m -> "
                       f"screen {tuple(int(v) for v in self.calib_points[self.calib_idx])}")
                 self.calib_hold_start = None
                 self.calib_armed = False
@@ -359,6 +372,7 @@ class MouseTagController:
             idx = (self.calib_idx + k) % n
             if idx not in self.calib_registered:
                 self.calib_idx = idx
+                self.warp_request = True
                 return
 
     def _finish_calibration(self):
@@ -369,6 +383,7 @@ class MouseTagController:
         H, mask = cv2.findHomography(src, dst, cv2.RANSAC, thr)
         if H is None or mask is None or int(mask.sum()) < 4:
             H, _ = cv2.findHomography(src, dst, 0)
+            mask = None  # least squares on all points
         if H is None:
             print("[calib] homography failed (points degenerate?), restarting calibration")
             self._reset_calibration()
@@ -456,6 +471,20 @@ class MouseTagController:
             if self.state == STATE_CALIBRATING and len(self.calib_registered) >= MIN_CALIB_POINTS:
                 self._finish_calibration()
 
+    def take_warp_target(self):
+        """Main thread: returns the calibration target to move the cursor to, once per change."""
+        with self.lock:
+            if self.state != STATE_CALIBRATING or not self.warp_request:
+                return None
+            self.warp_request = False
+            return self.calib_points[self.calib_idx]
+
+    def move_cursor(self, xy):
+        try:
+            self.mouse.position = (int(xy[0]), int(xy[1]))
+        except Exception as exc:
+            print(f"[mouse] move failed: {exc}")
+
     def request_quit(self):
         self.quit_flag = True
         self.release()
@@ -470,7 +499,8 @@ class MouseTagController:
                 "fps": self.fps, "error": self.error, "message": self.message,
                 "calib_idx": self.calib_idx, "calib_done": set(self.calib_registered),
                 "calib_armed": self.calib_armed, "hold": hold,
-                "click_armed": self.click_armed,
+                "click_armed": self.click_armed, "tag_norm": self.tag_norm,
+                "mouse": getattr(self.mouse, "name", "?"),
             }
 
 
@@ -505,18 +535,28 @@ def camera_loop(ctl, cam, detector, obj_pts, show_preview):
             pose = solve_pose(det.corners, obj_pts, K)
             if pose is not None:
                 best = (det, pose)
+                ctl.tag_norm = (1.0 - det.center[0] / w, det.center[1] / h)  # mirrored: like a mirror
                 ctl.on_detection(pose[1], pose[2], now)
         if best is None:
+            ctl.tag_norm = None
             ctl.on_no_detection(now)
 
         frames += 1
         if now - t_fps >= 0.5:
             ctl.fps, frames, t_fps = frames / (now - t_fps), 0, now
 
+        # mirrored thumbnail (natural when facing the camera); tag outline drawn after the flip
+        tw, th = OVERLAY_PREVIEW
+        thumb = cv2.flip(cv2.resize(frame, OVERLAY_PREVIEW, interpolation=cv2.INTER_AREA), 1)
+        if best is not None:
+            det, (rvec, tvec, _) = best
+            pts = det.corners * np.array([tw / w, th / h])
+            pts[:, 0] = tw - 1 - pts[:, 0]
+            cv2.polylines(thumb, [pts.astype(np.int32)], True, (0, 255, 0), 2, cv2.LINE_AA)
+            put_text(thumb, f"Z {tvec.ravel()[2]:.2f} m", (8, 22), 0.6, (0, 160, 0))
+            draw_tag(frame, det, rvec, tvec, K)
+        ctl.thumb = thumb
         if show_preview:
-            if best is not None:
-                det, (rvec, tvec, _) = best
-                draw_tag(frame, det, rvec, tvec, K)
             snap = ctl.snapshot()
             z = "--" if snap["z"] is None else f"{snap['z']:.3f}"
             put_text(frame, f"{snap['state']}  Z {z} m  {snap['fps']:.0f} fps", (10, 28), 0.8)
@@ -532,19 +572,30 @@ class HUD:
         self.root = root
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.configure(bg="#1b2028")
-        x = screen.x + screen.w - HUD_W - 10
-        root.geometry(f"{HUD_W}x{HUD_H}+{x}+{screen.y + 10}")
+        root.configure(bg="#1b2028", padx=4, pady=4)
+        self.screen = screen
+        self.size = None
         mk = lambda font, fg="#e0e0e0": tk.Label(root, text="", font=font, fg=fg, bg="#1b2028", anchor="w")
         self.state = mk(("DejaVu Sans", 13, "bold"))
         self.angle = mk(("DejaVu Sans Mono", 12))
         self.z = mk(("DejaVu Sans Mono", 11))
         self.click = mk(("DejaVu Sans", 11))
         self.fps = mk(("DejaVu Sans Mono", 9), "#8a939e")
-        self.msg = tk.Label(root, text="", font=("DejaVu Sans", 8), fg="#f39c12", bg="#1b2028",
-                            anchor="w", justify="left", wraplength=HUD_W - 12)
-        for w in (self.state, self.angle, self.z, self.click, self.fps, self.msg):
+        self.backend = mk(("DejaVu Sans Mono", 9), "#8a939e")
+        self.msg = tk.Label(root, text="", font=("DejaVu Sans", 9), fg="#f39c12", bg="#1b2028",
+                            anchor="w", justify="left", wraplength=HUD_MIN_W)
+        for w in (self.state, self.angle, self.z, self.click, self.fps, self.backend, self.msg):
             w.pack(fill="x", padx=6)
+
+    def _place(self):
+        """Let Tk compute the size (fonts scale with DPI) and keep the HUD in the top-right corner."""
+        self.root.update_idletasks()
+        w = max(HUD_MIN_W, self.root.winfo_reqwidth())
+        h = self.root.winfo_reqheight()
+        if (w, h) != self.size:
+            self.size = (w, h)
+            sc = self.screen
+            self.root.geometry(f"{w}x{h}+{sc.x + sc.w - w - 10}+{sc.y + 10}")
 
     def update(self, s):
         self.state.config(text=s["state"], fg=STATE_COLORS[s["state"]])
@@ -553,6 +604,7 @@ class HUD:
         self.click.config(text="\u25cf PREMUTO" if s["pressed"] else "\u25cb rilasciato",
                           fg="#e74c3c" if s["pressed"] else "#adb5bd")
         self.fps.config(text=f"camera {s['fps']:4.1f} fps")
+        self.backend.config(text=f"mouse: {s['mouse'].split(' ')[0]}")
         if s["error"]:
             msg = f"Camera: {s['error'][:90]}"
         elif s["state"] == STATE_FROZEN:
@@ -562,6 +614,7 @@ class HUD:
         else:
             msg = s["message"]
         self.msg.config(text=msg)
+        self._place()
 
 
 class CalibrationOverlay:
@@ -585,6 +638,9 @@ class CalibrationOverlay:
         self.confirm_btn = tk.Button(self.win, text="Conferma", command=ctl.confirm, state="disabled",
                                      bg="#198754", fg="white", activebackground="#20c997",
                                      disabledforeground="#9aa", **btn)
+        self.preview_lbl = tk.Label(self.win, bg="black", bd=2, relief="solid")
+        self.preview_lbl.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-20)
+        self.photo = None
         self.skip_btn.place(relx=0.5, rely=0.94, anchor="e", x=-10)
         self.confirm_btn.place(relx=0.5, rely=0.94, anchor="w", x=10)
         self.visible = True
@@ -620,8 +676,8 @@ class CalibrationOverlay:
             c.create_arc(x - r - 8, y - r - 8, x + r + 8, y + r + 8, start=90, extent=-359.9 * s["hold"],
                          style="arc", outline="#2ecc71", width=6, tags="dyn")
 
-        text = (f"Calibrazione: punto {len(done) + 1 if len(done) < n else n}/{n} \u2014 avvicina il tag "
-                f"al punto evidenziato e tienici per {self.click_hold:g}s")
+        text = (f"Calibrazione: punto {len(done) + 1 if len(done) < n else n}/{n} \u2014 punta il tag verso il cerchio giallo "
+                f"(il cursore e' li'), poi avvicinalo alla camera per {self.click_hold:g}s")
         # header lives in the free band between the 0.2 and 0.5 rows of calibration points
         ty = int(sc.h * 0.30)
         fs = max(12, min(18, sc.w // 70))
@@ -649,6 +705,29 @@ class CalibrationOverlay:
                                fill="#2ecc71", outline="", tags="dyn")
         self.confirm_btn.config(state="normal" if len(done) >= MIN_CALIB_POINTS else "disabled",
                                 text=f"Conferma ({len(done)})")
+        # live tag marker: where the tag is in the (mirrored) camera image, spread over the screen
+        if s["tag_norm"] is not None:
+            tx, ty2 = s["tag_norm"][0] * sc.w, s["tag_norm"][1] * sc.h
+            col = "#2ecc71" if s["calib_armed"] else "#e67e22"
+            c.create_line(tx - 18, ty2, tx + 18, ty2, fill=col, width=3, tags="dyn")
+            c.create_line(tx, ty2 - 18, tx, ty2 + 18, fill=col, width=3, tags="dyn")
+            c.create_oval(tx - 10, ty2 - 10, tx + 10, ty2 + 10, outline=col, width=2, tags="dyn")
+        self._update_preview()
+
+    def _update_preview(self):
+        import base64
+        import tkinter as tk
+        img = self.ctl.thumb
+        if img is None:
+            return
+        ok, buf = cv2.imencode(".png", img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        if not ok:
+            return
+        try:
+            self.photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()), format="png")
+            self.preview_lbl.config(image=self.photo)
+        except tk.TclError:
+            pass
 
 
 # ----------------------------------------------------------------- keyboard
@@ -768,6 +847,9 @@ def main():
                                   args=(ctl, cam, detector, tag_object_points(args.tag_size), not args.no_display))
     cam_thread.start()
 
+    t_start = time.monotonic()
+    warped_late = {"done": False}
+
     def tick():
         if ctl.quit_flag:
             shutdown()
@@ -775,6 +857,13 @@ def main():
         s = ctl.snapshot()
         hud.update(s)
         calibrating = s["state"] == STATE_CALIBRATING
+        target = ctl.take_warp_target()
+        if target is not None:
+            ctl.move_cursor(target)
+        elif calibrating and not warped_late["done"] and time.monotonic() - t_start > 1.5:
+            # the compositor opens a new uinput device ~1 s after creation: repeat the first warp
+            warped_late["done"] = True
+            ctl.move_cursor(ctl.calib_points[s["calib_idx"]])
         overlay.show(calibrating)
         if calibrating:
             overlay.update(s)
