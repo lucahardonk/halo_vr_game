@@ -1,100 +1,57 @@
-# halo_vr_game — Test Preliminari
+# halo_vr_game — Kinect v1 Test Suite
 
-Gioco VR/AR in sviluppo. Questa cartella contiene i test preliminari per verificare
-l'integrazione della **Kinect v1** (via libfreenect) e il rilevamento degli **AprilTag**
-tramite OpenCV, prima di integrare il tutto nel gioco.
-
----
-
-## Struttura del repository
-
+## Struttura
 ```
-halo_vr_game/
-├── README.md
-├── .gitignore
-└── test_preliminari/
-    ├── requirements.txt
-    ├── kinect_base/
-    │   ├── 1_kinect_dashboard/   # webapp Flask: RGB, IR, depth, tilt, LED, accelerometro, microfoni
-    │   └── 2_apriltag_pose/      # posa 6DOF AprilTag con assi X/Y/Z sul video Kinect
-    └── april_tag_detection/      # (legacy) vecchi script di rilevamento
+test_preliminari/kinect_base/
+├── 1_kinect_dashboard/   # Webapp Flask: tutte le funzionalità Kinect v1
+└── 2_apriltag_pose/      # AprilTag detection con overlay assi 6DOF
 ```
 
-> `april_tag_detection/rileva_tag.py` importava il vecchio `kinect_base/kinect.py`, ora rimosso:
-> usa `kinect_base/2_apriltag_pose/` al suo posto.
+## Setup sistema (una volta sola, sul NUC)
+```bash
+sudo apt update
+sudo apt install -y libfreenect-dev freenect python3-freenect libudev-dev portaudio19-dev
+# Regola udev per usare Kinect senza sudo
+sudo adduser $USER plugdev
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="045e", MODE="0666", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/51-kinect.rules
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ae", MODE="0666", GROUP="plugdev"' | sudo tee -a /etc/udev/rules.d/51-kinect.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# Logout/login per applicare gruppo plugdev
+```
 
----
+## Demo 1 — Kinect Dashboard (webapp locale)
 
-## Setup ambiente (NUC — nuc@nuc-NUC13ANHi7)
+**Feature:** RGB, Depth, IR stream · tilt motore · LED · accelerometro real-time · direzione microfono
 
-### 1. Scarica il repo
 ```bash
 cd ~/Documents/halo_vr_game
 git pull origin main
-ls test_preliminari
-```
-Devi vedere: `requirements.txt`, `kinect_base/`, `april_tag_detection/`.
-
-### 2. Dipendenze di sistema
-```bash
-sudo apt update
-sudo apt install freenect libfreenect-dev python3-venv
-```
-
-### 3. Crea il venv (esterno al repo)
-```bash
-python3 -m venv ~/.venvs/halo_vr_game
-source ~/.venvs/halo_vr_game/bin/activate
-pip install -r ~/Documents/halo_vr_game/test_preliminari/requirements.txt
-```
-
----
-
-## Test 1 — Dashboard Kinect completa
-
-Istruzioni complete: [`test_preliminari/kinect_base/1_kinect_dashboard/README.md`](test_preliminari/kinect_base/1_kinect_dashboard/README.md)
-
-```bash
-sudo apt install portaudio19-dev kinect-audio-setup   # poi scollega/ricollega la Kinect
-source ~/.venvs/halo_vr_game/bin/activate
-cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard
+cd test_preliminari/kinect_base/1_kinect_dashboard
 pip install -r requirements.txt
-python app.py        # apri http://localhost:5000
+python app.py
+# Apri il browser su http://localhost:5000
 ```
 
----
+## Demo 2 — AprilTag Pose (finestra OpenCV)
 
-## Test 2 — AprilTag pose 6DOF
-
-Istruzioni complete: [`test_preliminari/kinect_base/2_apriltag_pose/README.md`](test_preliminari/kinect_base/2_apriltag_pose/README.md)
+**Feature:** detect tag36h11 · overlay assi X/Y/Z · posa 6DOF · FPS counter
 
 ```bash
-source ~/.venvs/halo_vr_game/bin/activate
-cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose
+cd ~/Documents/halo_vr_game
+git pull origin main
+cd test_preliminari/kinect_base/2_apriltag_pose
 pip install -r requirements.txt
-python apriltag_pose.py --generate 0     # stampa il PNG, misura il quadrato nero
-python apriltag_pose.py --tag-size 0.10
+python apriltag_pose.py
+# Premi Q per uscire
+# Fallback webcam: python apriltag_pose.py --opencv 0
 ```
 
----
-
-## Comandi utili rapidi
-
-| Azione | Comando |
-|--------|---------|
-| Attiva venv | `source ~/.venvs/halo_vr_game/bin/activate` |
-| Verifica Kinect USB | `lsusb -d 045e:` |
-| Verifica microfoni Kinect | `arecord -l` |
-| Dashboard Kinect | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard && python app.py` |
-| Genera AprilTag | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose && python apriltag_pose.py --generate 0` |
-| AprilTag pose | `python apriltag_pose.py --tag-size 0.10` |
-| Aggiorna repo | `cd ~/Documents/halo_vr_game && git pull origin main` |
-
----
-
-## Prossimi passi
-
-1. **Calibrazione camera RGB** — acquisire i parametri intrinseci (lunghezza focale, centro ottico, distorsione) con una scacchiera, necessari per la stima della posa 3D.
-2. **Stima posa 3D** — una volta calibrata, `cv2.solvePnP` restituisce posizione e orientamento del tag nello spazio.
-3. **Allineamento RGB–Depth** — registrare i due flussi per usare la profondità nelle coordinate RGB.
-4. **Integrazione nel gioco** — portare il tracking nel motore VR.
+## Troubleshooting rapido
+| Problema | Soluzione |
+|---|---|
+| `freenect: cannot find libfreenect` | `sudo apt install libfreenect-dev` |
+| `usb_open error: insufficient permissions` | Aggiungi udev rules (vedi Setup), logout/login |
+| `No Kinect device found` | `lsusb` → cerca `045e:02ae`; prova `sudo freenect-glview` |
+| `pyaudio: No module named _portaudio` | `sudo apt install portaudio19-dev && pip install pyaudio` |
+| AprilTag: `cannot import pupil_apriltags` | `pip install pupil-apriltags` |
+| Dashboard lenta | Abbassa JPEG quality in `kinect_streams.py` (default 85→70) |
