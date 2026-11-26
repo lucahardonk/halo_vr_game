@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Ambienti virtuali (il venv sta in ~/.venvs/halo_vr_game, fuori dal repo)
+.venv/
+venv/
+env/
+
+# Immagini generate localmente (es. tag36h11_id0.png creato da genera_tag.py)
+*.png
+
+# File tecnici / editor
+.abacus.donotdelete
+.vscode/
+.idea/
+.DS_Store
