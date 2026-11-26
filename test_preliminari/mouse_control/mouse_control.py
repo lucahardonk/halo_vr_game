@@ -7,7 +7,8 @@
 - The HUD shows the tag rotation about its own Z axis, relative to the
   orientation it had when tracking (re)started.
 
-Keys (global, via pynput; also work when the camera window is focused):
+Mouse/keys backend: on Wayland the kernel uinput/evdev devices are used
+(input_backend.py), on X11 pynput. Keys are global; also on the HUD/camera window:
     SPACE  freeze (mouse released and free)      ENTER  resume
     c      recalibrate                           q/ESC  quit
 """
@@ -252,11 +253,10 @@ def primary_screen(tk_root):
 class MouseTagController:
     """Thread-safe state machine shared by camera, keyboard and Tk threads."""
 
-    def __init__(self, args, screen, mouse, button_left):
+    def __init__(self, args, screen, mouse):
         self.args = args
         self.screen = screen
         self.mouse = mouse
-        self.button_left = button_left
         self.lock = threading.RLock()
         self.quit_flag = False
         self.state = STATE_CALIBRATING
@@ -289,14 +289,14 @@ class MouseTagController:
 
     def _press(self):
         if not self.pressed:
-            self.mouse.press(self.button_left)
+            self.mouse.press()
             self.pressed = True
 
     def release(self):
         with self.lock:
             if self.pressed:
                 try:
-                    self.mouse.release(self.button_left)
+                    self.mouse.release()
                 finally:
                     self.pressed = False
 
@@ -652,27 +652,10 @@ class CalibrationOverlay:
 
 
 # ----------------------------------------------------------------- keyboard
-def start_keyboard_listener(ctl):
-    from pynput import keyboard
-
-    def on_press(key):
-        if key == keyboard.Key.space:
-            ctl.freeze()
-        elif key == keyboard.Key.enter:
-            ctl.resume()
-        elif key == keyboard.Key.esc:
-            ctl.request_quit()
-        else:
-            ch = getattr(key, "char", None)
-            if ch in ("c", "C"):
-                ctl.recalibrate()
-            elif ch in ("q", "Q"):
-                ctl.request_quit()
-
-    listener = keyboard.Listener(on_press=on_press)
-    listener.daemon = True
-    listener.start()
-    return listener
+def key_dispatcher(ctl):
+    actions = {"space": ctl.freeze, "enter": ctl.resume, "esc": ctl.request_quit,
+               "q": ctl.request_quit, "c": ctl.recalibrate}
+    return lambda name: actions.get(name, lambda: None)()
 
 
 def handle_local_key(ctl, k):
@@ -700,6 +683,10 @@ def parse_args():
     p.add_argument("--decimate", type=float, default=1.0, help="detector quad_decimate (2.0 = faster)")
     p.add_argument("--threads", type=int, default=4, help="detector threads")
     p.add_argument("--no-display", action="store_true", help="no camera window, only the Tk HUD")
+    p.add_argument("--mouse", choices=("auto", "uinput", "pynput"), default="auto",
+                   help="mouse backend: auto = uinput on Wayland, pynput on X11")
+    p.add_argument("--keys", choices=("auto", "evdev", "pynput"), default="auto",
+                   help="global keyboard backend: auto = evdev if readable, else pynput")
     args = p.parse_args()
     if args.click_far <= args.click_near:
         p.error("--click-far must be greater than --click-near")
@@ -712,7 +699,7 @@ def main():
     # heavy / display-dependent imports after argparse so that --help always works
     import tkinter as tk
     from pupil_apriltags import Detector
-    from pynput.mouse import Button, Controller as MouseController
+    from input_backend import make_keyboard, make_mouse
 
     detector = Detector(families=TAG_FAMILY, nthreads=args.threads, quad_decimate=args.decimate,
                         quad_sigma=0.0, refine_edges=1, decode_sharpening=0.25)
@@ -724,7 +711,13 @@ def main():
     root.title("mouse_control HUD")
     screen = primary_screen(root)
     print(f"Screen: {screen.w}x{screen.h} at ({screen.x},{screen.y})")
-    ctl = MouseTagController(args, screen, MouseController(), Button.left)
+    try:
+        mouse = make_mouse(args.mouse, screen)
+    except Exception as exc:
+        cam.close()
+        raise SystemExit(f"[mouse] {exc}")
+    print(f"Mouse: {mouse.name}")
+    ctl = MouseTagController(args, screen, mouse)
 
     closed = {"done": False}
 
@@ -734,6 +727,7 @@ def main():
         closed["done"] = True
         ctl.quit_flag = True
         ctl.release()
+        mouse.close()
         try:
             cam.close()
         except Exception:
@@ -759,9 +753,10 @@ def main():
         w.bind_all("c", lambda e: ctl.recalibrate())
 
     try:
-        start_keyboard_listener(ctl)
+        kb = make_keyboard(args.keys, key_dispatcher(ctl))
+        print(f"Keys: {kb.name}")
     except Exception as exc:
-        print(f"[keyboard] global listener unavailable ({exc}); keys work only on the camera window")
+        print(f"[keys] global listener unavailable ({exc}); keys work only on the HUD/camera window")
 
     if not args.no_display:
         try:

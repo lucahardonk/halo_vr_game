@@ -10,15 +10,46 @@ Un piccolo HUD in alto a destra mostra stato, angolo di rotazione del tag, dista
 
 ## Installazione
 
+### 1. Pacchetti e dipendenze Python
+
 ```bash
-sudo apt install libfreenect-dev python3-tk
+sudo apt install -y libfreenect-dev python3-tk python3-dev build-essential
 source ~/.venvs/halo_vr_game/bin/activate
 cd ~/Documents/halo_vr_game/test_preliminari/mouse_control
 pip install -r requirements.txt
 ```
 
-`python3-tk` serve per HUD e finestra di calibrazione (tkinter). Il modulo Python `freenect`
-è opzionale: senza, lo script usa `libfreenect_sync` via ctypes (come `apriltag_pose.py`).
+- `python3-tk`: HUD e finestra di calibrazione (tkinter).
+- `python3-dev build-essential`: servono a compilare `evdev` (pip non ha un pacchetto precompilato).
+- Il modulo Python `freenect` è opzionale: senza, lo script usa `libfreenect_sync` via ctypes.
+
+### 2. Permessi per Wayland (una volta sola)
+
+Su **Wayland** (default di Ubuntu) un programma non può muovere il cursore né leggere i tasti
+delle altre finestre con le librerie X11 (pynput). Lo script quindi crea un **mouse virtuale
+a livello kernel** (`/dev/uinput`) e legge la tastiera da `/dev/input`: funziona con
+qualsiasi finestra. Serve il gruppo `input`:
+
+```bash
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-uinput.rules
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf   # carica il modulo a ogni avvio
+sudo modprobe uinput
+sudo usermod -aG input $USER
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+**Poi logout e login** (o riavvio). Verifica:
+
+```bash
+groups | grep -o input        # deve stampare: input
+ls -l /dev/uinput             # deve essere: crw-rw---- root input
+```
+
+> Sicurezza: il gruppo `input` permette ai tuoi programmi di leggere la tastiera. Su un PC
+> personale va bene; per toglierlo: `sudo gpasswd -d $USER input`.
+
+Su **X11** ("Ubuntu su Xorg") questo passo non serve: lo script usa pynput.
 
 ## Avvio e calibrazione
 
@@ -59,11 +90,13 @@ pip install -r requirements.txt
 | **q** / **Esc** | esce (il tasto viene sempre rilasciato) |
 
 Spazio + Invio funzionano come "sollevare il mouse dal tappetino": riprendendo, il cursore
-**non salta** ma continua da dove si trova, con l'offset ricalcolato rispetto alla nuova posizione del tag.
+continua dall'ultima posizione impostata dal tag, con l'offset ricalcolato rispetto alla nuova
+posizione del tag. Su Wayland la posizione reale del cursore non è leggibile: se in FROZEN muovi
+il mouse fisico, alla ripresa il cursore torna dove l'aveva lasciato il tag.
 
-I tasti sono globali (pynput): funzionano anche se la finestra in primo piano è un'altra
-(attenzione: premere `q` o `c` mentre scrivi in un'altra app ha effetto anche sullo script).
-Funzionano inoltre sulla finestra camera OpenCV.
+I tasti sono globali: funzionano anche se la finestra in primo piano è un'altra. **Non vengono
+bloccati**: lo Spazio scrive anche uno spazio nell'app in primo piano, e `q`/`c` agiscono sullo
+script anche mentre scrivi altrove. Funzionano inoltre su HUD e finestra camera.
 
 ## Angolo
 
@@ -76,7 +109,11 @@ spostandolo nello spazio senza ruotarlo l'angolo resta ~0°.
 
 | Sintomo | Soluzione |
 |---------|-----------|
-| Il cursore non si muove / tasti globali non funzionano (Wayland) | avvia con `GDK_BACKEND=x11 python mouse_control.py`; se non basta, alla schermata di login scegli la sessione **"Ubuntu su Xorg"**: con Wayland nativo pynput controlla solo le finestre XWayland |
+| All'avvio `Mouse: pynput (X11)` su Wayland, cursore fermo | `/dev/uinput` non scrivibile: rifai "Permessi per Wayland" e **logout/login**; per vedere l'errore esatto: `python mouse_control.py --mouse uinput` |
+| `[keys] evdev unavailable` | utente non nel gruppo `input` (logout/login dopo `usermod`); intanto i tasti funzionano cliccando sull'HUD |
+| `pip install evdev` fallisce (`Python.h` / `gcc`) | `sudo apt install python3-dev build-essential` |
+| Cursore mappato male con più monitor | il mouse virtuale copre l'intero desktop: usa un solo monitor per il test |
+| Alternativa a uinput | sessione **"Ubuntu su Xorg"** al login, poi `python mouse_control.py --mouse pynput --keys pynput` |
 | `freenect_sync_get_video failed` | la Kinect è occupata (dashboard `1_kinect_dashboard`, `freenect-glview`, `apriltag_pose.py`): chiudili; controlla alimentatore e USB |
 | Click che parte da solo o non parte mai | regola le soglie guardando `Z:` nell'HUD, es. `--click-near 0.35 --click-far 0.45`; tieni almeno 5–10 cm di isteresi |
 | Cursore che trema | allontana meno il tag, migliora la luce, stampa un tag più grande; il filtro One-Euro (`FILTER_MIN_CUTOFF` in cima al file) si può abbassare |
@@ -98,3 +135,5 @@ spostandolo nello spazio senza ruotarlo l'angolo resta ~0°.
 | `--decimate` | 1.0 | `quad_decimate` del detector (2.0 = più veloce, portata minore) |
 | `--threads` | 4 | thread del detector |
 | `--no-display` | — | nessuna finestra camera, solo HUD |
+| `--mouse` | auto | `uinput` (Wayland/X11, kernel), `pynput` (solo X11); auto = uinput su Wayland |
+| `--keys` | auto | `evdev` (tastiera da `/dev/input`), `pynput`; auto = evdev se leggibile |
