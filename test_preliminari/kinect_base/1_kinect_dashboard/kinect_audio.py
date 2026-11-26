@@ -8,6 +8,8 @@ Mic positions along the sensor bar (metres, from the Kinect SDK docs):
 Positive angle = sound coming from the mic3 side. If the arrow points the wrong
 way on your unit, use the "invert" toggle in the UI (channel order can differ).
 """
+import contextlib
+import os
 import threading
 import time
 
@@ -62,6 +64,82 @@ def estimate_direction(block, fs, pairs, mic_x):
     return angle, float(np.mean(qualities))
 
 
+KINECT_NAMES = ("kinect", "xbox nui", "nui audio", "microsoft xbox")
+NOT_FOUND_MSG = (
+    "Kinect microphone array not found. The Kinect v1 mic needs its firmware uploaded: "
+    "sudo apt install kinect-audio-setup (if it fails on the MD5 check see README), "
+    "then unplug/replug the Kinect and check 'arecord -l' shows 'Kinect USB Audio'. "
+    "List devices with: python app.py --list-audio"
+)
+
+
+@contextlib.contextmanager
+def quiet_stderr():
+    """Temporarily point fd 2 at /dev/null (PortAudio/ALSA/JACK probing noise)."""
+    try:
+        saved = os.dup(2)
+    except OSError:
+        yield
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(devnull)
+
+
+def input_devices(pa):
+    out = []
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if int(info.get("maxInputChannels", 0)) >= 1:
+            out.append(info)
+    return out
+
+
+def find_device(pa, hint=None):
+    """Pick the Kinect mic array: explicit hint > Kinect-named device > any raw 4-channel device."""
+    devs = input_devices(pa)
+    if hint is not None:
+        h = str(hint)
+        for info in devs:
+            if (h.isdigit() and int(h) == int(info["index"])) or h.lower() in str(info["name"]).lower():
+                return info
+        return None
+    named = [d for d in devs if any(k in str(d["name"]).lower() for k in KINECT_NAMES)]
+    if named:
+        # prefer the raw hw: entry exposing 4 channels over plugin wrappers
+        named.sort(key=lambda d: (int(d["maxInputChannels"]) != 4, "hw:" not in str(d["name"])))
+        return named[0]
+    four = [d for d in devs if int(d["maxInputChannels"]) == 4 and "hw:" in str(d["name"])]
+    return four[0] if four else None
+
+
+def list_audio_devices():
+    try:
+        import pyaudio
+    except ImportError:
+        print("pyaudio not installed: sudo apt install portaudio19-dev && pip install pyaudio")
+        return
+    with quiet_stderr():
+        pa = pyaudio.PyAudio()
+    try:
+        with quiet_stderr():
+            devs = input_devices(pa)
+            pick = find_device(pa)
+        print("idx  ch   rate   name")
+        for d in devs:
+            mark = "  <== auto" if pick is not None and d["index"] == pick["index"] else ""
+            print(f"{int(d['index']):3d}  {int(d['maxInputChannels']):2d}  {int(d['defaultSampleRate']):6d}  {d['name']}{mark}")
+        if pick is None:
+            print("\n" + NOT_FOUND_MSG)
+    finally:
+        pa.terminate()
+
+
 class MicArray(threading.Thread):
     """Background capture thread that calls ``callback(dict)`` for every block."""
 
@@ -85,23 +163,7 @@ class MicArray(threading.Thread):
 
     # -------------------------------------------------------------- device
     def _find_device(self, pa):
-        candidates = []
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if int(info.get("maxInputChannels", 0)) < 1:
-                continue
-            name = str(info.get("name", ""))
-            if self.device_hint is not None:
-                if str(self.device_hint).isdigit() and int(self.device_hint) == i:
-                    return info
-                if str(self.device_hint).lower() in name.lower():
-                    return info
-                continue
-            if "kinect" in name.lower():
-                candidates.append(info)
-        # prefer the entry exposing 4 channels (raw hw:) over plugin wrappers
-        candidates.sort(key=lambda d: -int(d["maxInputChannels"]))
-        return candidates[0] if candidates else None
+        return find_device(pa, self.device_hint)
 
     def _open(self, pa, pyaudio, info):
         channels = min(4, int(info["maxInputChannels"]))
@@ -129,16 +191,17 @@ class MicArray(threading.Thread):
             print(f"[audio] {self.status['error']}")
             return
         while self._running:
-            pa = pyaudio.PyAudio()
+            # PortAudio only rescans devices on re-init, so re-create it on each retry,
+            # but with stderr silenced (ALSA/JACK probing spam).
+            with quiet_stderr():
+                pa = pyaudio.PyAudio()
             stream = None
             try:
-                info = self._find_device(pa)
-                if info is None:
-                    raise RuntimeError(
-                        "Kinect microphone array not found (sudo apt install kinect-audio-setup, "
-                        "then replug the Kinect; check with: arecord -l)"
-                    )
-                stream, channels, rate = self._open(pa, pyaudio, info)
+                with quiet_stderr():
+                    info = self._find_device(pa)
+                    if info is None:
+                        raise RuntimeError(NOT_FOUND_MSG)
+                    stream, channels, rate = self._open(pa, pyaudio, info)
                 self._set_status(available=True, device=info["name"], channels=channels, rate=rate, error=None)
                 print(f"[audio] capturing '{info['name']}' {channels} ch @ {rate} Hz")
                 self._capture(stream, channels, rate)
@@ -146,15 +209,19 @@ class MicArray(threading.Thread):
                 if self.status.get("error") != str(exc):
                     print(f"[audio] {exc}")
                 self._set_status(available=False, error=str(exc))
-                time.sleep(3.0)
+                for _ in range(50):  # retry every 5 s, stop promptly
+                    if not self._running:
+                        break
+                    time.sleep(0.1)
             finally:
-                if stream is not None:
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        pass
-                pa.terminate()
+                with quiet_stderr():
+                    if stream is not None:
+                        try:
+                            stream.stop_stream()
+                            stream.close()
+                        except Exception:
+                            pass
+                    pa.terminate()
 
     def _capture(self, stream, channels, rate):
         if channels >= 4:

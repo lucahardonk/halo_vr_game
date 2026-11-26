@@ -67,6 +67,9 @@ Opzioni:
 | `--no-audio` | — | disattiva i microfoni |
 | `--audio-device` | auto | indice PortAudio o parte del nome (se l'auto-detect "Kinect" non funziona) |
 | `--noise-gate` | -55 | soglia dBFS sotto la quale la direzione non viene aggiornata |
+| `--video-mode` | rgb | stream video iniziale (`rgb` o `ir`, condividono lo stesso endpoint USB) |
+| `--list-audio` | — | elenca i dispositivi audio di input ed esce |
+| `--verbose` | — | mostra i messaggi grezzi di libfreenect/ALSA/JACK (di default sono filtrati e i pacchetti USB troncati vengono riassunti ogni 10 s) |
 
 ## Cosa verificare
 
@@ -108,6 +111,9 @@ Eventi Socket.IO (namespace `/data`): `accel_data`, `mic_direction`, `status`.
 | Kinect: disconnessa | alimentatore + USB; chiudi `freenect-glview` e altri script Kinect; `lsusb -d 045e:` |
 | `LIBUSB_ERROR_ACCESS` | regole udev: reinstalla `libfreenect-dev`, scollega/ricollega |
 | Tilt/LED danno errore 503 | il sottodispositivo motore non risponde: ricollega la Kinect (modelli "Kinect for Windows" 1473 possono richiedere firmware audio caricato) |
-| Microfoni non disponibili | `sudo apt install kinect-audio-setup`, ricollega, `arecord -l`; poi `--audio-device Kinect` |
+| Microfoni non disponibili | `sudo apt install p7zip-full kinect-audio-setup`, ricollega, `arecord -l`; poi `python app.py --list-audio` e `--audio-device <indice>` |
+| `kinect-audio-setup` fallisce con errore MD5 | il file del Kinect SDK è cambiato: `sudo sed -i 's/^SDK_MD5=.*/SDK_MD5="945806927702b2c47c32125ab9a80344"/' /usr/sbin/kinect_fetch_fw && sudo apt install --fix-broken kinect-audio-setup`, poi ricollega la Kinect |
+| Badge "USB drop N/s" > 0, immagini a strisce (`[Stream 80] Expected 1908 data bytes`) | pacchetti video persi dal controller/hub: Kinect direttamente al PC, senza prolunghe; altrimenti hub USB 2.0 **alimentato** |
+| RGB fermo con "no frames from Kinect" mentre depth/accel funzionano | lo stream video non arriva (tipico di alcuni controller USB3): prova un'altra porta (USB 2.0 se c'è) o un hub USB 2.0 alimentato; verifica con `freenect-glview`; prova `python app.py --video-mode ir`. Il thread video resta bloccato in libfreenect: per cambiare modalità riavvia l'app |
 | `pyaudio not installed` | `sudo apt install portaudio19-dev && pip install pyaudio` |
 | La pagina non mostra grafici | servono i CDN (Bootstrap, Chart.js, Socket.IO): il NUC deve essere online |

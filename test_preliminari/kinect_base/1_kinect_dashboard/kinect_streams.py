@@ -81,11 +81,50 @@ class FreenectSync:
             lib.freenect_sync_set_led.restype = C.c_int
         self.lib = lib
         self.ctrl_lock = threading.Lock()
+        # libfreenect_sync is not thread-safe while it (re)opens the device: concurrent
+        # calls from the video/depth/accel threads with no Kinect (or after an unplug)
+        # end in "double free or corruption". Until a call has succeeded, every call is
+        # serialised through init_lock; once the device is up they run in parallel.
+        self.init_lock = threading.Lock()
+        self.ready = False
+        self._first_try = None
+
+    def _call(self, fn, *args, blocking=False):
+        """Run a libfreenect_sync call.
+
+        ``blocking`` marks frame calls (get_video/get_depth): they wait inside the C
+        library until a frame arrives, which may be forever if a stream is broken
+        (e.g. RGB on some USB3 controllers). They must therefore never run while
+        holding init_lock, otherwise one dead stream freezes every other thread.
+        The device is opened by a non-blocking call (tilt state) first; frame calls
+        only take the lock as a fallback when the motor API is unusable.
+        """
+        if self.ready:
+            status = fn(*args)
+            if status != 0:
+                self.ready = False
+            return status
+        if blocking and self.has_motor:
+            if self._first_try is None:
+                self._first_try = time.monotonic()
+            if time.monotonic() - self._first_try < 6.0:
+                time.sleep(0.2)  # wait for the accelerometer thread to open the device
+                return -1
+        with self.init_lock:
+            if self.ready:
+                return fn(*args)
+            status = fn(*args)
+            if status == 0:
+                self.ready = True
+                self._first_try = None
+            else:
+                time.sleep(0.2)  # let the library settle before the next thread retries
+            return status
 
     def _frame(self, fn, fmt, shape, ctype):
         ptr = C.c_void_p()
         ts = C.c_uint32()
-        status = fn(C.byref(ptr), C.byref(ts), self.index, fmt)
+        status = self._call(fn, C.byref(ptr), C.byref(ts), self.index, fmt, blocking=True)
         if status != 0 or not ptr.value:
             raise RuntimeError(f"{fn.__name__} failed (code {status})")
         size = int(np.prod(shape))
@@ -107,7 +146,7 @@ class FreenectSync:
             raise RuntimeError("this libfreenect_sync build has no motor API")
         with self.ctrl_lock:
             ptr = C.POINTER(RawTiltState)()
-            status = self.lib.freenect_sync_get_tilt_state(C.byref(ptr), self.index)
+            status = self._call(self.lib.freenect_sync_get_tilt_state, C.byref(ptr), self.index)
             if status != 0 or not ptr:
                 raise RuntimeError(f"freenect_sync_get_tilt_state failed (code {status})")
             s = ptr.contents
@@ -119,12 +158,12 @@ class FreenectSync:
 
     def set_tilt(self, degrees):
         with self.ctrl_lock:
-            if self.lib.freenect_sync_set_tilt_degs(int(round(degrees)), self.index) != 0:
+            if self._call(self.lib.freenect_sync_set_tilt_degs, int(round(degrees)), self.index) != 0:
                 raise RuntimeError("freenect_sync_set_tilt_degs failed")
 
     def set_led(self, value):
         with self.ctrl_lock:
-            if self.lib.freenect_sync_set_led(int(value), self.index) != 0:
+            if self._call(self.lib.freenect_sync_set_led, int(value), self.index) != 0:
                 raise RuntimeError("freenect_sync_set_led failed")
 
     def stop(self):
@@ -262,7 +301,9 @@ def raw_depth_to_meters(raw):
 class KinectManager:
     """Owns the device and all capture threads."""
 
-    def __init__(self, index=0, accel_hz=100.0, accel_emit_hz=20.0, on_accel=None):
+    VIDEO_STALL_S = 4.0
+
+    def __init__(self, index=0, accel_hz=100.0, accel_emit_hz=20.0, on_accel=None, video_mode="rgb"):
         self.index = index
         self.accel_period = 1.0 / accel_hz
         self.emit_period = 1.0 / accel_emit_hz
@@ -272,7 +313,10 @@ class KinectManager:
         self.rgb = FrameStream("rgb", render_rgb)
         self.ir = FrameStream("ir", render_ir)
         self.depth = FrameStream("depth", render_depth)
-        self.video_mode = "rgb"
+        self.video_mode = video_mode if video_mode in ("rgb", "ir") else "rgb"
+        self._video_wait_since = None  # monotonic time of the pending video call
+        self._video_wait_mode = None
+        self.video_stalled = None      # mode whose stream delivers no frames
         self.connected = False
         self.center_depth_m = None
         self.tilt_deg = None
@@ -283,6 +327,7 @@ class KinectManager:
         self.accel_fps = FpsMeter()
         self._running = False
         self._threads = []
+        self._tilt_sent = False
 
     # ---------------------------------------------------------------- control
     def start(self):
@@ -295,8 +340,10 @@ class KinectManager:
             print(f"[kinect] {exc}")
             return
         self._running = True
-        self.ir.set_placeholder("IR inactive\nselect IR mode (RGB and IR\nshare the same sensor)")
-        for target, name in ((self._video_loop, "video"), (self._depth_loop, "depth"), (self._accel_loop, "accel")):
+        other = self.ir if self.video_mode == "rgb" else self.rgb
+        other.set_placeholder(f"{other.name.upper()} inactive\nselect {other.name.upper()} mode (RGB and IR\nshare the same sensor)")
+        for target, name in ((self._video_loop, "video"), (self._depth_loop, "depth"),
+                             (self._accel_loop, "accel"), (self._watchdog_loop, "watchdog")):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
@@ -307,17 +354,22 @@ class KinectManager:
             t.join(timeout=2.0)
         for s in (self.rgb, self.ir, self.depth):
             s.stop()
-        if self.dev is not None:
+        if self.dev is not None and self.dev.ready:  # never touch an unopened device on exit
             try:
                 self.dev.set_led(LED_OPTIONS["green"])
             except Exception:
                 pass
-            self.dev.stop()
+            if not self.video_stalled:  # a thread is still blocked inside the library: let exit clean up
+                self.dev.stop()
 
     def set_video_mode(self, mode):
         if mode not in ("rgb", "ir"):
             raise ValueError("mode must be 'rgb' or 'ir'")
         if mode != self.video_mode:
+            if self.video_stalled:
+                raise RuntimeError(
+                    f"{self.video_stalled.upper()} stream is stuck inside libfreenect (no frames): "
+                    f"restart with: python app.py --video-mode {mode}")
             other = self.ir if mode == "rgb" else self.rgb
             self.video_mode = mode
             other.set_placeholder(f"{other.name.upper()} inactive\nselect {other.name.upper()} mode (RGB and IR\nshare the same sensor)")
@@ -326,7 +378,10 @@ class KinectManager:
     def set_tilt(self, degrees):
         self._require_dev()
         degrees = int(max(TILT_MIN, min(TILT_MAX, round(float(degrees)))))
+        if degrees == self.tilt_target and self._tilt_sent:
+            return degrees  # avoid flooding the motor with identical commands (slider drags)
         self.dev.set_tilt(degrees)
+        self._tilt_sent = True
         self.tilt_target = degrees
         return degrees
 
@@ -350,6 +405,7 @@ class KinectManager:
             "connected": self.connected,
             "error": self.error,
             "video_mode": self.video_mode,
+            "video_stalled": self.video_stalled,
             "fps": {
                 "rgb": round(self.rgb.fps.fps, 1),
                 "ir": round(self.ir.fps.fps, 1),
@@ -371,7 +427,15 @@ class KinectManager:
             mode = self.video_mode
             stream = self.rgb if mode == "rgb" else self.ir
             try:
-                frame = self.dev.rgb() if mode == "rgb" else self.dev.ir()
+                self._video_wait_mode = mode
+                self._video_wait_since = time.monotonic()
+                try:
+                    frame = self.dev.rgb() if mode == "rgb" else self.dev.ir()
+                finally:
+                    self._video_wait_since = None
+                if self.video_stalled:
+                    print(f"[kinect] {mode.upper()} frames arriving again")
+                    self.video_stalled = None
                 if mode != current:
                     print(f"[kinect] video mode: {mode}")
                     current = mode
@@ -391,6 +455,34 @@ class KinectManager:
                 self.depth.push(depth)
             except RuntimeError as exc:
                 self._on_capture_error(self.depth, exc)
+
+    def _watchdog_loop(self):
+        """Detect a video stream that never delivers frames.
+
+        freenect_sync_get_video() blocks until a frame arrives. If the device is
+        open (depth/accelerometer work) but the video call hangs, the RGB/IR
+        isochronous stream is broken - typically a USB3 (xHCI) controller or hub
+        that mangles the 1908-byte video packets. The thread cannot be
+        interrupted, so show a clear explanation instead of a frozen image.
+        """
+        while self._running:
+            time.sleep(0.5)
+            since, mode = self._video_wait_since, self._video_wait_mode
+            if since is None or self.video_stalled or not self.dev.ready:
+                continue
+            if time.monotonic() - since < self.VIDEO_STALL_S:
+                continue
+            self.video_stalled = mode
+            name = mode.upper()
+            other = "ir" if mode == "rgb" else "rgb"
+            msg = (f"{name} stream: no frames from the Kinect for {self.VIDEO_STALL_S:.0f}s while depth/accel "
+                   f"work -> USB video packets lost. Try another USB port (USB 2.0 port or a POWERED USB 2.0 hub), "
+                   f"no extension cable; test with 'freenect-glview'; or restart with --video-mode {other}")
+            print(f"[kinect] {msg}")
+            self.error = msg
+            (self.rgb if mode == "rgb" else self.ir).set_placeholder(
+                f"{name}: no frames from Kinect\n(depth works: USB video\npackets lost)\n"
+                f"try another USB port /\npowered USB2 hub, or\n--video-mode {other}")
 
     def _on_capture_error(self, stream, exc):
         if self.connected or self.error is None:
@@ -418,6 +510,8 @@ class KinectManager:
         next_tick = t0
         last_emit = t0
         error_reported = False
+        backoff = 0.05
+        ax = ay = az = 0.0
         while self._running:
             now = time.monotonic()
             try:
@@ -429,11 +523,15 @@ class KinectManager:
                 self.tilt_status = status
                 self.accel_fps.tick()
                 samples.append([round(now - t0, 4), round(ax, 3), round(ay, 3), round(az, 3)])
+                backoff = 0.05
             except RuntimeError as exc:
                 if not error_reported:
                     print(f"[kinect] accelerometer error: {exc}")
                     error_reported = True
-                time.sleep(0.5)
+                time.sleep(backoff)
+                backoff = min(2.0, backoff * 2)  # exponential backoff while the motor device is unavailable
+                next_tick = time.monotonic()
+                continue
             if samples and now - last_emit >= self.emit_period:
                 g = max(1e-6, (ax * ax + ay * ay + az * az) ** 0.5)
                 self.on_accel({

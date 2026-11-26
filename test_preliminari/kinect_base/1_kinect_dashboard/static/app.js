@@ -242,6 +242,12 @@
       firstStatus = false;
     }
 
+    const u = s.usb || {};
+    $("st-usb-rate").textContent = fmt(u.usb_dropped_rate || 0, 0);
+    $("st-usb").className = "badge " + ((u.usb_dropped_rate || 0) > 0 ? "text-bg-warning" : "text-bg-dark");
+    $("st-usb").title = `Pacchetti USB video troncati: ${u.usb_dropped_total || 0} totali. ` +
+      "Kinect v1 su controller USB3: se alto usa un hub USB 2.0 alimentato o un'altra porta.";
+
     const m = s.mic || {};
     if (m.available) {
       $("mic-info").textContent = `${m.device} — ${m.channels} canali @ ${m.rate} Hz, ${fmt(m.hz, 0)} stime/s`;

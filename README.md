@@ -54,4 +54,6 @@ python apriltag_pose.py
 | `No Kinect device found` | `lsusb` → cerca `045e:02ae`; prova `sudo freenect-glview` |
 | `pyaudio: No module named _portaudio` | `sudo apt install portaudio19-dev && pip install pyaudio` |
 | AprilTag: `cannot import pupil_apriltags` | `pip install pupil-apriltags` |
+| Microfoni Kinect non trovati / `kinect-audio-setup` errore MD5 | vedi "Problemi comuni" in `test_preliminari/kinect_base/1_kinect_dashboard/README.md` |
+| Depth OK ma RGB nero/fermo, `[Stream 80] Expected 1908...` | problema USB: Kinect direttamente al PC senza hub/prolunghe, oppure hub USB 2.0 alimentato; `python app.py --video-mode ir` per testare l'IR |
 | Dashboard lenta | Abbassa JPEG quality in `kinect_streams.py` (default 85→70) |

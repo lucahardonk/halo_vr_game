@@ -9,7 +9,8 @@ import time
 from flask import Flask, Response, jsonify, render_template, request
 from flask_socketio import SocketIO
 
-from kinect_audio import MicArray
+import noise_filter
+from kinect_audio import MicArray, list_audio_devices
 from kinect_streams import LED_OPTIONS, TILT_MAX, TILT_MIN, KinectManager
 
 NAMESPACE = "/data"
@@ -34,6 +35,7 @@ def full_status():
     last = state["mic_last"] or {}
     st["mic"]["angle"] = last.get("angle")
     st["mic"]["confidence"] = last.get("confidence")
+    st["usb"] = noise_filter.snapshot()
     return st
 
 
@@ -108,6 +110,8 @@ def api_video_mode():
         mode = state["kinect"].set_video_mode(str(body.get("mode", "")))
     except ValueError as exc:
         return api_error(exc)
+    except RuntimeError as exc:
+        return api_error(exc, 409)
     return jsonify({"ok": True, "mode": mode})
 
 
@@ -143,9 +147,21 @@ def main():
     parser.add_argument("--audio-device", default=None,
                         help="PortAudio device index or name substring (default: auto-detect 'Kinect')")
     parser.add_argument("--noise-gate", type=float, default=-55.0, help="mic noise gate in dBFS")
+    parser.add_argument("--video-mode", choices=("rgb", "ir"), default="rgb",
+                        help="initial video stream (RGB and IR share the same USB endpoint)")
+    parser.add_argument("--list-audio", action="store_true", help="list audio input devices and exit")
+    parser.add_argument("--verbose", action="store_true",
+                        help="show raw libfreenect/ALSA/JACK messages (disables the stderr filter)")
     args = parser.parse_args()
 
-    kinect = KinectManager(index=args.index, accel_hz=args.accel_hz, on_accel=lambda d: emit("accel_data", d))
+    if args.list_audio:
+        list_audio_devices()
+        return
+
+    # must run before libfreenect / PortAudio are loaded
+    noise_filter.install(verbose=args.verbose)
+
+    kinect = KinectManager(index=args.index, accel_hz=args.accel_hz, video_mode=args.video_mode, on_accel=lambda d: emit("accel_data", d))
     state["kinect"] = kinect
     kinect.start()
 
