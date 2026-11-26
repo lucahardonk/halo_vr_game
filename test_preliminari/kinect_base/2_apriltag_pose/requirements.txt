@@ -1,0 +1,7 @@
+# System package (Ubuntu), install first:
+#   sudo apt install libfreenect-dev
+# Optional: python3-freenect (official Python bindings); without it the script
+# uses libfreenect_sync directly through ctypes.
+numpy
+opencv-contrib-python>=4.8,<5
+pupil-apriltags>=1.0.4

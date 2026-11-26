@@ -15,15 +15,13 @@ halo_vr_game/
 └── test_preliminari/
     ├── requirements.txt
     ├── kinect_base/
-    │   ├── kinect.py          # wrapper libfreenect (ctypes)
-    │   ├── test_kinect.py     # test RGB, profondità e IR
-    │   └── test_motore_accelerometro.py  # test motore tilt + accelerometro
-    └── april_tag_detection/
-        ├── genera_tag.py      # genera tag36h11_id0.png
-        └── rileva_tag.py      # rilevamento live via Kinect
+    │   ├── 1_kinect_dashboard/   # webapp Flask: RGB, IR, depth, tilt, LED, accelerometro, microfoni
+    │   └── 2_apriltag_pose/      # posa 6DOF AprilTag con assi X/Y/Z sul video Kinect
+    └── april_tag_detection/      # (legacy) vecchi script di rilevamento
 ```
 
-> Il file `tag36h11_id0.png` è generato localmente con `genera_tag.py` e **non** è tracciato da git.
+> `april_tag_detection/rileva_tag.py` importava il vecchio `kinect_base/kinect.py`, ora rimosso:
+> usa `kinect_base/2_apriltag_pose/` al suo posto.
 
 ---
 
@@ -52,112 +50,31 @@ pip install -r ~/Documents/halo_vr_game/test_preliminari/requirements.txt
 
 ---
 
-## Test 1 — Kinect base (RGB + Profondità + IR)
+## Test 1 — Dashboard Kinect completa
 
-### Prerequisiti
-- Alimentatore della Kinect collegato alla presa **e** cavo USB collegato al NUC.
-- Nessun altro programma che usa la Kinect (es. `freenect-glview`) deve essere aperto.
-
-### Verifica rapida opzionale
-```bash
-lsusb -d 045e:
-```
-Devono comparire 2–3 righe Microsoft (camera, motor, audio).
+Istruzioni complete: [`test_preliminari/kinect_base/1_kinect_dashboard/README.md`](test_preliminari/kinect_base/1_kinect_dashboard/README.md)
 
 ```bash
-freenect-glview    # prova visiva veloce — chiudilo prima di lanciare Python
-```
-
-### Esegui il test
-```bash
+sudo apt install portaudio19-dev kinect-audio-setup   # poi scollega/ricollega la Kinect
 source ~/.venvs/halo_vr_game/bin/activate
-cd ~/Documents/halo_vr_game/test_preliminari/kinect_base
-
-# RGB + mappa di profondità
-python test_kinect.py
-
-# Solo infrarosso
-python test_kinect.py --mode ir
+cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard
+pip install -r requirements.txt
+python app.py        # apri http://localhost:5000
 ```
-
-### Cosa guardare
-| Modalità | Cosa deve succedere |
-|----------|---------------------|
-| `rgbd` | Finestra RGB fluida + mappa di profondità colorata che cambia muovendo la mano |
-| `ir` | Immagine grigia con pattern di puntini, reagisce alla scena |
-
-Ogni 2 secondi il terminale stampa le iterazioni/s (misura il ciclo Python, non il frame rate hardware).
-
-**Chiudi** con **Q** o **Esc**.
-
-### Problemi comuni
-| Sintomo | Causa probabile | Soluzione |
-|---------|-----------------|-----------|
-| `lsusb` non mostra Microsoft | Kinect non alimentata o USB non collegata | Controlla cavi |
-| `LIBUSB_ERROR_ACCESS` | Mancano le regole udev | `sudo apt install libfreenect-dev` poi scollega/ricollega |
-| `Libreria freenect_sync non trovata` | libfreenect non installata | `sudo apt install libfreenect-dev` |
-| Nessun frame / dispositivo occupato | `freenect-glview` aperto | Chiudi glview prima di eseguire Python |
 
 ---
 
-## Test 2 — AprilTag detection (tag36h11, ID 0)
+## Test 2 — AprilTag pose 6DOF
 
-### Passo 1 — Genera il tag PNG
+Istruzioni complete: [`test_preliminari/kinect_base/2_apriltag_pose/README.md`](test_preliminari/kinect_base/2_apriltag_pose/README.md)
+
 ```bash
 source ~/.venvs/halo_vr_game/bin/activate
-cd ~/Documents/halo_vr_game/test_preliminari/april_tag_detection
-python genera_tag.py
+cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose
+pip install -r requirements.txt
+python apriltag_pose.py --generate 0     # stampa il PNG, misura il quadrato nero
+python apriltag_pose.py --tag-size 0.10
 ```
-Viene creato `tag36h11_id0.png` nella stessa cartella.
-
-### Passo 2 — Stampa il tag
-- Stampa `tag36h11_id0.png` in **bianco e nero**, senza ridimensionare.
-- Il quadrato nero deve essere circa **10 cm** di lato.
-- Incolla il foglio su un **cartoncino piatto** per evitare deformazioni.
-
-### Passo 3 — Rilevamento live
-```bash
-python rileva_tag.py
-```
-
-### Cosa guardare
-- **Contorno verde** attorno al tag rilevato.
-- **Punto giallo** al centro geometrico.
-- In alto: `ID 0 | centro: x=..., y=... px`
-
-### Test di robustezza
-1. Avvicina e allontana il tag: le coordinate `y` cambiano.
-2. Sposta a destra/sinistra: `x` cambia.
-3. Inclinalo di 45°: deve continuare a rilevarlo.
-4. Coprilo completamente: la label deve diventare `ID 0 non rilevato`.
-5. Scoprilo: il contorno e le coordinate ricompaiono subito.
-
----
-
-## Test 3 — Motore e accelerometro
-
-Usa la full context API di libfreenect (non la sync API), aprendo solo il sottodispositivo **motore**.
-
-### Comandi
-```bash
-source ~/.venvs/halo_vr_game/bin/activate
-cd ~/Documents/halo_vr_game/test_preliminari/kinect_base
-python test_motore_accelerometro.py           # sequenza tilt + accelerometro
-python test_motore_accelerometro.py --no-tilt  # solo lettura accelerometro
-```
-
-Sequenza automatica: 0° (2 s) → +10° (3 s) → −10° (3 s) → 0° (2 s). Ogni secondo stampa
-accelerometro raw (x, y, z), angolo corrente e stato del motore.
-
-### Cosa guardare
-- La Kinect si **inclina fisicamente** su e giù.
-- I valori dell'**accelerometro cambiano** con l'inclinazione.
-- Lo **stato motore** passa da `moving` a `stopped` quando raggiunge l'angolo.
-
-**Chiudi** con **Ctrl+C**: se il motore è stato mosso, la Kinect viene riportata a 0° prima di uscire.
-
-> ⚠️ **Attenzione:** non forzare il motore oltre i limiti fisici (circa ±27°) e non bloccare la
-> Kinect con le mani mentre si muove. Usa `--no-tilt` se non vuoi muovere il sensore.
 
 ---
 
@@ -167,13 +84,10 @@ accelerometro raw (x, y, z), angolo corrente e stato del motore.
 |--------|---------|
 | Attiva venv | `source ~/.venvs/halo_vr_game/bin/activate` |
 | Verifica Kinect USB | `lsusb -d 045e:` |
-| Prova rapida Kinect | `freenect-glview` |
-| Test RGB + Depth | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base && python test_kinect.py` |
-| Test IR | `python test_kinect.py --mode ir` |
-| Genera AprilTag PNG | `cd ~/Documents/halo_vr_game/test_preliminari/april_tag_detection && python genera_tag.py` |
-| Rileva AprilTag live | `python rileva_tag.py` |
-| Test motore + accelerometro | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base && python test_motore_accelerometro.py` |
-| Solo accelerometro | `python test_motore_accelerometro.py --no-tilt` |
+| Verifica microfoni Kinect | `arecord -l` |
+| Dashboard Kinect | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard && python app.py` |
+| Genera AprilTag | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose && python apriltag_pose.py --generate 0` |
+| AprilTag pose | `python apriltag_pose.py --tag-size 0.10` |
 | Aggiorna repo | `cd ~/Documents/halo_vr_game && git pull origin main` |
 
 ---
