@@ -16,7 +16,8 @@ halo_vr_game/
     ├── requirements.txt
     ├── kinect_base/
     │   ├── kinect.py          # wrapper libfreenect (ctypes)
-    │   └── test_kinect.py     # test RGB, profondità e IR
+    │   ├── test_kinect.py     # test RGB, profondità e IR
+    │   └── test_motore_accelerometro.py  # test motore tilt + accelerometro
     └── april_tag_detection/
         ├── genera_tag.py      # genera tag36h11_id0.png
         └── rileva_tag.py      # rilevamento live via Kinect
@@ -133,6 +134,33 @@ python rileva_tag.py
 
 ---
 
+## Test 3 — Motore e accelerometro
+
+Usa la full context API di libfreenect (non la sync API), aprendo solo il sottodispositivo **motore**.
+
+### Comandi
+```bash
+source ~/.venvs/halo_vr_game/bin/activate
+cd ~/Documents/halo_vr_game/test_preliminari/kinect_base
+python test_motore_accelerometro.py           # sequenza tilt + accelerometro
+python test_motore_accelerometro.py --no-tilt  # solo lettura accelerometro
+```
+
+Sequenza automatica: 0° (2 s) → +10° (3 s) → −10° (3 s) → 0° (2 s). Ogni secondo stampa
+accelerometro raw (x, y, z), angolo corrente e stato del motore.
+
+### Cosa guardare
+- La Kinect si **inclina fisicamente** su e giù.
+- I valori dell'**accelerometro cambiano** con l'inclinazione.
+- Lo **stato motore** passa da `moving` a `stopped` quando raggiunge l'angolo.
+
+**Chiudi** con **Ctrl+C**: se il motore è stato mosso, la Kinect viene riportata a 0° prima di uscire.
+
+> ⚠️ **Attenzione:** non forzare il motore oltre i limiti fisici (circa ±27°) e non bloccare la
+> Kinect con le mani mentre si muove. Usa `--no-tilt` se non vuoi muovere il sensore.
+
+---
+
 ## Comandi utili rapidi
 
 | Azione | Comando |
@@ -144,6 +172,8 @@ python rileva_tag.py
 | Test IR | `python test_kinect.py --mode ir` |
 | Genera AprilTag PNG | `cd ~/Documents/halo_vr_game/test_preliminari/april_tag_detection && python genera_tag.py` |
 | Rileva AprilTag live | `python rileva_tag.py` |
+| Test motore + accelerometro | `cd ~/Documents/halo_vr_game/test_preliminari/kinect_base && python test_motore_accelerometro.py` |
+| Solo accelerometro | `python test_motore_accelerometro.py --no-tilt` |
 | Aggiorna repo | `cd ~/Documents/halo_vr_game && git pull origin main` |
 
 ---
