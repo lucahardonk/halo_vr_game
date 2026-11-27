@@ -1,6 +1,4 @@
 numpy
-opencv-contrib-python>=4.8,<5
-pupil-apriltags>=1.0.4
+opencv-contrib-python>=4.7
+pyautogui
 pynput>=1.7
-screeninfo>=0.8
-evdev>=1.6; sys_platform == "linux"
