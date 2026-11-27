@@ -28,7 +28,9 @@ import argparse
 import ctypes as C
 import os
 import queue
+import re
 import select
+import subprocess
 import sys
 import threading
 import time
@@ -38,7 +40,7 @@ import cv2
 import numpy as np
 
 # ----------------------------------------------------------------- settings
-SCREEN_W, SCREEN_H = 3840, 2160          # 4K 16:9, hardcoded for now
+SCREEN_W, SCREEN_H = 3840, 2160          # size of the TARGET monitor (overwritten at startup by --monitor)
 DEFAULT_CALIB_DIST_M = 0.5               # T2: tag at 50 cm in front of the screen centre
 DEFAULT_TAG_SIZE_M = 0.05
 POINTING_AXIS = np.array([0.0, 0.0, -1.0])  # tag normal towards camera/screen (tag frame, see FLIP)
@@ -228,6 +230,82 @@ class ScreenMapper:
 ABS_MAX = 32767
 UINPUT_NAME = "halo-apriltag-pointer"
 
+# Multi-monitor: the compositor spreads ABS 0..32767 over the WHOLE desktop
+# (bounding box of all monitors). The cursor must live only on one monitor, so
+# monitor-local pixels are shifted by the monitor offset and divided by the
+# desktop size. Geometry comes from `xrandr --listmonitors` (works under
+# XWayland too) or from the --monitor / --desktop flags.
+MONITOR_RECT = (0, 0, SCREEN_W, SCREEN_H)  # x, y, w, h of the target monitor inside the desktop
+DESKTOP_RECT = (0, 0, SCREEN_W, SCREEN_H)  # x, y, w, h of the whole desktop
+
+_XRANDR_RE = re.compile(r"^\s*(\d+):\s+\+?(\*?)(\S+)\s+(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)")
+
+
+def list_monitors():
+    """[(index, name, primary, x, y, w, h)] from xrandr, or [] if unavailable."""
+    try:
+        out = subprocess.run(["xrandr", "--listmonitors"], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    mons = []
+    for line in out.splitlines():
+        m = _XRANDR_RE.match(line)
+        if m:
+            idx, star, name, w, h, x, y = m.groups()
+            mons.append((int(idx), name, star == "*", int(x), int(y), int(w), int(h)))
+    return mons
+
+
+def _parse_rect(text, n, what):
+    try:
+        vals = [int(v) for v in re.split(r"[,x+]", text.strip().lower()) if v != ""]
+    except ValueError:
+        vals = []
+    if len(vals) != n or any(v <= 0 for v in vals[-2:]):
+        raise ValueError(f"{what} non valido: '{text}'")
+    return tuple(vals)
+
+
+def resolve_geometry(monitor_arg, desktop_arg):
+    """Returns (monitor_rect, desktop_rect, description_lines)."""
+    mons = list_monitors()
+    info = [f"  xrandr {i}: {name}{' (primario)' if pr else ''} {w}x{h}+{x}+{y}"
+            for i, name, pr, x, y, w, h in mons] or ["  xrandr non disponibile: uso i valori dei flag/default"]
+
+    # target monitor
+    if "," in monitor_arg:
+        mon = _parse_rect(monitor_arg, 4, "--monitor")
+    elif mons:
+        if monitor_arg == "primary":
+            pick = next((m for m in mons if m[2]), mons[0])
+        else:
+            pick = next((m for m in mons if str(m[0]) == monitor_arg or m[1] == monitor_arg), None)
+            if pick is None:
+                raise ValueError(f"--monitor '{monitor_arg}' non trovato in xrandr")
+        mon = pick[3:7]
+    else:
+        mon = (0, 0, 3840, 2160)
+
+    # whole desktop
+    if desktop_arg != "auto":
+        dw, dh = _parse_rect(desktop_arg, 2, "--desktop")
+        desk = (0, 0, dw, dh)
+    elif mons:
+        x0 = min(m[3] for m in mons); y0 = min(m[4] for m in mons)
+        x1 = max(m[3] + m[5] for m in mons); y1 = max(m[4] + m[6] for m in mons)
+        desk = (x0, y0, x1 - x0, y1 - y0)
+    else:
+        desk = (0, 0, mon[0] + mon[2], mon[1] + mon[3])
+    if (mon[0] < desk[0] or mon[1] < desk[1] or
+            mon[0] + mon[2] > desk[0] + desk[2] or mon[1] + mon[3] > desk[1] + desk[3]):
+        raise ValueError(f"il monitor {mon} esce dal desktop {desk}: controlla --monitor/--desktop")
+    return mon, desk, info
+
+
+def monitor_to_desktop(x, y):
+    """Monitor-local pixel -> global desktop pixel."""
+    return MONITOR_RECT[0] + x, MONITOR_RECT[1] + y
+
 
 def is_wayland():
     return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
@@ -260,8 +338,9 @@ class UInputMouse:
         self.ui = UInput(caps, name=UINPUT_NAME)
 
     def move(self, x, y):
-        ax = int(round(x / (SCREEN_W - 1) * ABS_MAX))
-        ay = int(round(y / (SCREEN_H - 1) * ABS_MAX))
+        gx, gy = monitor_to_desktop(x, y)
+        ax = int(round((gx - DESKTOP_RECT[0]) / (DESKTOP_RECT[2] - 1) * ABS_MAX))
+        ay = int(round((gy - DESKTOP_RECT[1]) / (DESKTOP_RECT[3] - 1) * ABS_MAX))
         self.ui.write(self.e.EV_ABS, self.e.ABS_X, min(max(ax, 0), ABS_MAX))
         self.ui.write(self.e.EV_ABS, self.e.ABS_Y, min(max(ay, 0), ABS_MAX))
         self.ui.syn()
@@ -283,7 +362,8 @@ class PyAutoGuiMouse:
         self.pg = pyautogui
 
     def move(self, x, y):
-        self.pg.moveTo(x, y, _pause=False)
+        gx, gy = monitor_to_desktop(x, y)
+        self.pg.moveTo(gx, gy, _pause=False)
 
     def close(self):
         pass
@@ -414,6 +494,11 @@ def parse_args():
     p.add_argument("--invert-y", action="store_true", help="inverti l'asse Y")
     p.add_argument("--smooth", type=float, default=0.5, help="filtro esponenziale 0..0.95 (0 = off)")
     p.add_argument("--no-preview", action="store_true", help="non mostrare la finestra della camera")
+    p.add_argument("--monitor", default="primary",
+                   help="monitor su cui resta il cursore: 'primary' (default), indice/nome di "
+                        "`xrandr --listmonitors`, oppure X,Y,W,H in pixel del desktop")
+    p.add_argument("--desktop", default="auto",
+                   help="dimensione totale del desktop WxH (tutti i monitor); default auto da xrandr")
     p.add_argument("--mouse", choices=("auto", "uinput", "pyautogui"), default="auto",
                    help="backend mouse: auto = uinput se disponibile (Wayland ok), altrimenti pyautogui")
     args = p.parse_args()
@@ -428,7 +513,21 @@ def parse_args():
 
 
 def main():
+    global SCREEN_W, SCREEN_H, MONITOR_RECT, DESKTOP_RECT
     args = parse_args()
+
+    try:
+        MONITOR_RECT, DESKTOP_RECT, geo_info = resolve_geometry(args.monitor, args.desktop)
+    except ValueError as exc:
+        print(f"ERRORE geometria monitor: {exc}", file=sys.stderr)
+        return 1
+    SCREEN_W, SCREEN_H = MONITOR_RECT[2], MONITOR_RECT[3]
+    print("Monitor:")
+    for line in geo_info:
+        print(line)
+    mx, my, mw, mh = MONITOR_RECT
+    print(f"  -> cursore limitato a {mw}x{mh}+{mx}+{my} dentro desktop "
+          f"{DESKTOP_RECT[2]}x{DESKTOP_RECT[3]}+{DESKTOP_RECT[0]}+{DESKTOP_RECT[1]}")
 
     try:
         mouse = make_mouse(args.mouse)

@@ -24,7 +24,7 @@ T_virt = T3 · T1_corrente  (= T2 · T_rel)
 p      = traslazione di T_virt          # posizione del tag nel frame monitor
 d      = R_virt · (0, 0, -1)            # normale del tag = direzione in cui punta
 hit    = p + s·d,  s = -p_z / d_z       # intersezione con il piano dello schermo (metri)
-px     = 1920 ± hit_x · 1920/reach      # schermo 3840×2160 (4K 16:9, hardcoded)
+px     = 1920 ± hit_x · 1920/reach      # W×H del monitor scelto con --monitor (es. 3840×2160)
 py     = 1080 ± hit_y · 1920/reach
 ```
 
@@ -82,6 +82,23 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 All'avvio lo script stampa `Mouse: uinput ...`. Se stampa `pyautogui`, uinput non è utilizzabile:
 `python mouse_control.py --mouse uinput ...` mostra il motivo esatto.
 
+## Più monitor
+
+Con più monitor il compositor distribuisce il puntatore assoluto uinput su **tutto il desktop**
+(es. due 4K affiancati = 7680×2160), quindi il "centro" cadeva tra i due schermi. Ora lo script
+legge la disposizione da `xrandr --listmonitors` (funziona anche su Wayland via XWayland),
+limita il cursore al solo monitor scelto (default: il **primario**) e alla calibrazione lo porta
+al centro di quel monitor. All'avvio stampa la geometria rilevata, ad esempio:
+
+```
+Monitor:
+  xrandr 0: DP-2 (primario) 3840x2160+0+0
+  xrandr 1: DP-1 3840x2160+3840+0
+  -> cursore limitato a 3840x2160+0+0 dentro desktop 7680x2160+0+0
+```
+
+Se xrandr non è disponibile: `--monitor 0,0,3840,2160 --desktop 7680x2160`.
+
 ## Opzioni
 
 | Flag | Default | Descrizione |
@@ -95,6 +112,8 @@ All'avvio lo script stampa `Mouse: uinput ...`. Se stampa `pyautogui`, uinput no
 | `--smooth` | `0.5` | filtro esponenziale (0 = disattivato) |
 | `--no-preview` | off | nessuna finestra camera |
 | `--index` | `0` | indice device Kinect |
+| `--monitor` | `primary` | monitor dove resta il cursore: `primary`, indice/nome di `xrandr --listmonitors`, oppure `X,Y,W,H` |
+| `--desktop` | `auto` | dimensione totale del desktop `WxH` (tutti i monitor); auto = da xrandr |
 | `--mouse` | `auto` | `uinput` (kernel, Wayland/X11), `pyautogui` (solo X11); auto = uinput se disponibile |
 
 Nota: di default l'asse X è specchiato perché la Kinect guarda l'utente (destra in immagine =
