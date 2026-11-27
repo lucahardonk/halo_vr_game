@@ -23,7 +23,9 @@ if pynput is installed and works (X11), globally from any window.
 """
 import argparse
 import ctypes as C
+import os
 import queue
+import select
 import sys
 import threading
 import time
@@ -54,6 +56,7 @@ T2[2, 3] = REF_DIST_M
 
 PREVIEW_WINDOW = "mouse_control - Kinect (ENTER calibra, SPACE pausa, q esci)"
 TAG_LOST_HOLD_S = 0.3
+KEY_DEBOUNCE_S = 0.25
 
 
 # ----------------------------------------------------------------- Kinect
@@ -215,7 +218,130 @@ class ScreenMapper:
         return fx, fy, T_rel, T_virt
 
 
+# ----------------------------------------------------------------- mouse output
+# On Wayland pyautogui/pynput only reach XWayland windows. A kernel virtual
+# absolute pointer (/dev/uinput, like the previous working version) moves the
+# real cursor everywhere: the compositor maps ABS 0..32767 to the whole screen.
+ABS_MAX = 32767
+UINPUT_NAME = "halo-apriltag-pointer"
+
+
+def is_wayland():
+    return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+
+
+def uinput_problem():
+    """None if /dev/uinput is usable, else a readable reason."""
+    try:
+        import evdev  # noqa: F401
+    except ImportError:
+        return "modulo python 'evdev' mancante (pip install evdev)"
+    if not os.path.exists("/dev/uinput"):
+        return "/dev/uinput mancante (sudo modprobe uinput)"
+    if not os.access("/dev/uinput", os.W_OK):
+        return "nessun permesso di scrittura su /dev/uinput (regola udev + gruppo 'input', poi logout/login)"
+    return None
+
+
+class UInputMouse:
+    name = "uinput (puntatore virtuale kernel, funziona su Wayland)"
+
+    def __init__(self):
+        from evdev import AbsInfo, UInput, ecodes as e
+        self.e = e
+        caps = {
+            e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE],
+            e.EV_ABS: [(e.ABS_X, AbsInfo(0, 0, ABS_MAX, 0, 0, 0)),
+                       (e.ABS_Y, AbsInfo(0, 0, ABS_MAX, 0, 0, 0))],
+        }
+        self.ui = UInput(caps, name=UINPUT_NAME)
+
+    def move(self, x, y):
+        ax = int(round(x / (SCREEN_W - 1) * ABS_MAX))
+        ay = int(round(y / (SCREEN_H - 1) * ABS_MAX))
+        self.ui.write(self.e.EV_ABS, self.e.ABS_X, min(max(ax, 0), ABS_MAX))
+        self.ui.write(self.e.EV_ABS, self.e.ABS_Y, min(max(ay, 0), ABS_MAX))
+        self.ui.syn()
+
+    def close(self):
+        try:
+            self.ui.close()
+        except Exception:
+            pass
+
+
+class PyAutoGuiMouse:
+    name = "pyautogui (X11; su Wayland solo finestre XWayland)"
+
+    def __init__(self):
+        import pyautogui
+        pyautogui.FAILSAFE = False
+        pyautogui.PAUSE = 0
+        self.pg = pyautogui
+
+    def move(self, x, y):
+        self.pg.moveTo(x, y, _pause=False)
+
+    def close(self):
+        pass
+
+
+def make_mouse(backend):
+    """backend: auto | uinput | pyautogui."""
+    if backend in ("auto", "uinput"):
+        problem = uinput_problem()
+        if problem is None:
+            return UInputMouse()
+        if backend == "uinput" or is_wayland():
+            print(f"[mouse] uinput non utilizzabile: {problem}")
+        if backend == "uinput":
+            raise RuntimeError(problem)
+        if is_wayland():
+            print("[mouse] fallback pyautogui: su Wayland il cursore si muove SOLO sopra finestre XWayland")
+    return PyAutoGuiMouse()
+
+
 # ----------------------------------------------------------------- keyboard
+class EvdevKeyboard:
+    """Global ENTER/SPACE from the real keyboards in /dev/input (no grab, works on Wayland)."""
+
+    def __init__(self, keys):
+        from evdev import InputDevice, ecodes as e, list_devices
+        self.e = e
+        self.keys = keys
+        self.devices = []
+        for path in list_devices():
+            try:
+                dev = InputDevice(path)
+            except OSError:
+                continue
+            caps = dev.capabilities().get(e.EV_KEY, [])
+            if dev.name != UINPUT_NAME and e.KEY_SPACE in caps and e.KEY_ENTER in caps:
+                self.devices.append(dev)
+            else:
+                dev.close()
+        if not self.devices:
+            raise RuntimeError("nessuna tastiera leggibile in /dev/input (utente nel gruppo 'input'?)")
+        self.map = {e.KEY_SPACE: "space", e.KEY_ENTER: "enter", e.KEY_KPENTER: "enter"}
+        self.running = True
+        threading.Thread(target=self._loop, name="evdev-keys", daemon=True).start()
+
+    def _loop(self):
+        fds = {dev.fd: dev for dev in self.devices}
+        while self.running and fds:
+            r, _, _ = select.select(list(fds), [], [], 0.5)
+            for fd in r:
+                try:
+                    for ev in fds[fd].read():
+                        if ev.type == self.e.EV_KEY and ev.value == 1 and ev.code in self.map:
+                            self.keys.put(self.map[ev.code])
+                except OSError:
+                    fds.pop(fd, None)
+
+    def stop(self):
+        self.running = False
+
+
 def start_terminal_reader(keys):
     """Every line typed in the terminal (ENTER) becomes an 'enter' event."""
     def loop():
@@ -225,8 +351,18 @@ def start_terminal_reader(keys):
         threading.Thread(target=loop, name="stdin-enter", daemon=True).start()
 
 
+class _PynputListener:
+    name = "pynput (X11)"
+
+
 def start_global_listener(keys):
-    """Global ENTER/SPACE via pynput (X11). Optional: returns None if unavailable."""
+    """Global ENTER/SPACE: evdev (works on Wayland) first, then pynput (X11). None if unavailable."""
+    try:
+        kb = EvdevKeyboard(keys)
+        kb.name = "evdev /dev/input (globale, anche Wayland)"
+        return kb
+    except Exception as exc:
+        print(f"[tasti] evdev non disponibile ({exc})")
     try:
         from pynput import keyboard
     except Exception:
@@ -241,6 +377,7 @@ def start_global_listener(keys):
         listener = keyboard.Listener(on_press=on_press)
         listener.daemon = True
         listener.start()
+        listener.name = _PynputListener.name
         return listener
     except Exception:
         return None
@@ -271,6 +408,8 @@ def parse_args():
     p.add_argument("--invert-y", action="store_true", help="inverti l'asse Y")
     p.add_argument("--smooth", type=float, default=0.5, help="filtro esponenziale 0..0.95 (0 = off)")
     p.add_argument("--no-preview", action="store_true", help="non mostrare la finestra della camera")
+    p.add_argument("--mouse", choices=("auto", "uinput", "pyautogui"), default="auto",
+                   help="backend mouse: auto = uinput se disponibile (Wayland ok), altrimenti pyautogui")
     args = p.parse_args()
     if args.tag_size <= 0:
         p.error("--tag-size deve essere > 0")
@@ -284,17 +423,16 @@ def main():
     args = parse_args()
 
     try:
-        import pyautogui
+        mouse = make_mouse(args.mouse)
     except Exception as exc:
-        print(f"ERRORE: pyautogui non disponibile ({exc}). pip install pyautogui", file=sys.stderr)
+        print(f"ERRORE mouse: {exc}", file=sys.stderr)
         return 1
-    pyautogui.FAILSAFE = False
-    pyautogui.PAUSE = 0
 
     try:
         cam = open_kinect(args.index)
     except RuntimeError as exc:
         print(f"ERRORE: {exc}", file=sys.stderr)
+        mouse.close()
         return 1
 
     estimator = TagPoseEstimator(args.tag_size)
@@ -304,7 +442,8 @@ def main():
     listener = start_global_listener(keys)
 
     print(f"Kinect: {cam.name} | tag36h11 {args.tag_size * 100:.1f} cm | schermo {SCREEN_W}x{SCREEN_H}")
-    print("Tastiera globale: " + ("pynput" if listener else "non disponibile (usa terminale / finestra preview)"))
+    print(f"Mouse: {mouse.name}")
+    print("Tastiera globale: " + (listener.name if listener else "non disponibile (usa terminale / finestra preview)"))
     print("Posiziona il tag al centro dello schermo a ~60 cm. Premi INVIO per calibrare.")
 
     preview = not args.no_preview
@@ -314,6 +453,7 @@ def main():
     active = False          # mouse control on/off (SPACE)
     last_T1, last_seen = None, 0.0
     last_print = 0.0
+    last_key_t = {}
     try:
         while True:
             frame = cam.read()
@@ -342,6 +482,11 @@ def main():
                     break
             while not keys.empty():
                 key = keys.get_nowait()
+                # the same physical press can arrive from several sources
+                # (evdev + terminal + preview window): keep only the first one
+                if now - last_key_t.get(key, -1.0) < KEY_DEBOUNCE_S:
+                    continue
+                last_key_t[key] = now
                 if key == "enter":
                     if last_T1 is not None and now - last_seen < TAG_LOST_HOLD_S:
                         mapper.calibrate(last_T1)
@@ -366,7 +511,7 @@ def main():
                     if res is not None:
                         px, py, T_rel, T_virt = res
                         if active:
-                            pyautogui.moveTo(px, py, _pause=False)
+                            mouse.move(px, py)
                         d = T_rel[:3, 3]
                         info = [f"dT = [{d[0]:+.3f} {d[1]:+.3f} {d[2]:+.3f}] m",
                                 f"cursore = ({px}, {py})"]
@@ -387,6 +532,7 @@ def main():
     finally:
         if listener is not None:
             listener.stop()
+        mouse.close()
         try:
             cam.close()
         except Exception:

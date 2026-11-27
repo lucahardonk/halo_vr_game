@@ -47,8 +47,28 @@ python3 mouse_control.py --tag-size 0.05      # lato del quadrato NERO del tag, 
 4. **SPAZIO** → pausa/ripresa del controllo mouse (il loop continua, cursore libero).
 5. **INVIO** di nuovo → ricalibra.  **Ctrl+C** (o `q`/ESC nella finestra preview) → esce.
 
-Tasti: INVIO dal terminale; INVIO/SPAZIO/q nella finestra preview; INVIO/SPAZIO globali se
-`pynput` funziona (sessione X11). Se la Kinect non è collegata lo script stampa un errore ed esce.
+Tasti: INVIO dal terminale; INVIO/SPAZIO/q nella finestra preview; INVIO/SPAZIO globali da
+qualsiasi finestra tramite `evdev` (`/dev/input`, funziona anche su Wayland), con fallback `pynput`
+(solo X11). Se la Kinect non è collegata lo script stampa un errore ed esce.
+
+## Mouse su Wayland (uinput)
+
+Su Wayland `pyautogui`/`pynput` non possono muovere il cursore. Lo script crea quindi un
+**mouse virtuale a livello kernel** (`/dev/uinput`, puntatore assoluto mappato su 3840×2160),
+come la versione precedente. Se l'avevi già configurato non serve rifare nulla. Altrimenti:
+
+```bash
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/60-uinput.rules
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+sudo modprobe uinput
+sudo usermod -aG input $USER
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# poi logout/login. Verifica: groups | grep input ; ls -l /dev/uinput  (root input)
+```
+
+All'avvio lo script stampa `Mouse: uinput ...`. Se stampa `pyautogui`, uinput non è utilizzabile:
+`python mouse_control.py --mouse uinput ...` mostra il motivo esatto.
 
 ## Opzioni
 
@@ -62,8 +82,8 @@ Tasti: INVIO dal terminale; INVIO/SPAZIO/q nella finestra preview; INVIO/SPAZIO 
 | `--smooth` | `0.5` | filtro esponenziale (0 = disattivato) |
 | `--no-preview` | off | nessuna finestra camera |
 | `--index` | `0` | indice device Kinect |
+| `--mouse` | `auto` | `uinput` (kernel, Wayland/X11), `pyautogui` (solo X11); auto = uinput se disponibile |
 
 Nota: di default l'asse X è specchiato perché la Kinect guarda l'utente (destra in immagine =
 sinistra dell'utente). Se il tag viene tenuto ruotato di 180° gli assi si invertono: usa
-`--no-mirror` / `--invert-y`. `pyautogui` richiede una sessione X11 (su Wayland muove il cursore
-solo sulle finestre XWayland).
+`--no-mirror` / `--invert-y`.

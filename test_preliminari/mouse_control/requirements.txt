@@ -1,4 +1,5 @@
 numpy
 opencv-contrib-python>=4.7
+evdev>=1.6; sys_platform == "linux"
 pyautogui
 pynput>=1.7
