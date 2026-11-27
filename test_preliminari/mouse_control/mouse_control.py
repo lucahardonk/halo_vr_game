@@ -4,14 +4,17 @@ Math (all 4x4 homogeneous transforms, camera frame: x right, y down, z forward):
   T1      camera -> tag pose, estimated every frame (cv2.aruco + IPPE_SQUARE).
           Tag frame is expressed like the camera frame (x right, y down, z into the
           tag), so a tag facing the camera has rotation ~= identity.
-  T2      fixed reference pose: translation (0, 0, REF_DIST=0.6 m), rotation identity
-          = "centre of the screen at 60 cm from the camera".
+  T2      fixed reference pose: translation (0, 0, D), rotation identity, D = --calib-dist
+          (default 0.5 m) = "tag in front of the screen centre, at D, pointing at it".
   ENTER   captures T1_ref and computes  T3 = T2 * inv(T1_ref)  (virtual camera->monitor).
-  Every frame:
+  Every frame (laser-pointer ray cast):
           T_rel  = inv(T1_ref) * T1_current          (tag motion relative to reference)
-          T_virt = T3 * T1_current = T2 * T_rel      (tag in the virtual monitor frame)
-          u, v   = x / z, y / z of T_virt            (projection, normalised by depth)
-          pixel  = screen centre + gain * (u, v)      -> clamped to 3840 x 2160
+          T_virt = T3 * T1_current = T2 * T_rel      (tag in the virtual monitor frame,
+                                                       monitor = plane z = 0)
+          p = T_virt translation, d = T_virt R * (0,0,-1)   (tag normal = pointing ray)
+          hit    = p + s d  with  s = -p_z / d_z     (intersection with the screen plane)
+          pixel  = screen centre + (hit_x, hit_y) * px_per_m  -> clamped to 3840 x 2160
+          Tilting by theta from the centre moves the hit by D * tan(theta): a straight line.
 
 Keys: ENTER = calibrate / recalibrate, SPACE = pause / resume mouse control,
       Ctrl+C = quit (also 'q' / ESC in the preview window).
@@ -19,7 +22,7 @@ Keys are read from: the terminal (ENTER), the preview window (ENTER/SPACE/q) and
 if pynput is installed and works (X11), globally from any window.
 
     python3 mouse_control.py --tag-size 0.05
-    python3 mouse_control.py --tag-size 0.065 --reach 0.15 --no-preview
+    python3 mouse_control.py --tag-size 0.065 --calib-dist 0.5 --reach 0.30 --no-preview
 """
 import argparse
 import ctypes as C
@@ -36,8 +39,9 @@ import numpy as np
 
 # ----------------------------------------------------------------- settings
 SCREEN_W, SCREEN_H = 3840, 2160          # 4K 16:9, hardcoded for now
-REF_DIST_M = 0.6                         # T2: screen centre at 60 cm from the camera
+DEFAULT_CALIB_DIST_M = 0.5               # T2: tag at 50 cm in front of the screen centre
 DEFAULT_TAG_SIZE_M = 0.05
+POINTING_AXIS = np.array([0.0, 0.0, -1.0])  # tag normal towards camera/screen (tag frame, see FLIP)
 
 # Kinect v1 RGB intrinsics (640x480, datasheet / commonly used values)
 CAM_W, CAM_H = 640, 480
@@ -50,9 +54,6 @@ DIST_COEFFS = np.zeros(5, dtype=np.float64)
 # Rotating 180 deg about X gives x right, y down, z into the tag: same axes as the
 # camera, so a tag facing the camera has R ~= I, consistent with T2 = identity rotation.
 FLIP = np.diag([1.0, -1.0, -1.0])
-
-T2 = np.eye(4)
-T2[2, 3] = REF_DIST_M
 
 PREVIEW_WINDOW = "mouse_control - Kinect (ENTER calibra, SPACE pausa, q esci)"
 TAG_LOST_HOLD_S = 0.3
@@ -155,21 +156,16 @@ class TagPoseEstimator:
         return corners, ids
 
     def pose(self, corner):
-        """corner: (1, 4, 2) array. Returns T1 (4x4) camera -> tag, or None."""
-        rvec = tvec = None
-        if hasattr(cv2.aruco, "estimatePoseSingleMarkers"):  # removed in OpenCV >= 4.7
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-                [corner], self.tag_size, CAMERA_MATRIX, DIST_COEFFS)
-            rvec, tvec = rvecs[0].reshape(3, 1), tvecs[0].reshape(3, 1)
-        else:
-            ok, rvec, tvec = cv2.solvePnP(self.obj_pts, corner.reshape(4, 2).astype(np.float64),
-                                          CAMERA_MATRIX, DIST_COEFFS, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-            if not ok:
-                return None
+        """corner: (1, 4, 2) array. Returns T1 (4x4) camera -> tag, or None.
+        IPPE_SQUARE, solution with the lowest reprojection error."""
+        ok, rvec, tvec = cv2.solvePnP(self.obj_pts, corner.reshape(4, 2).astype(np.float64),
+                                      CAMERA_MATRIX, DIST_COEFFS, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        if not ok:
+            return None
         R, _ = cv2.Rodrigues(rvec)
         T = np.eye(4)
         T[:3, :3] = R @ FLIP
-        T[:3, 3] = tvec.ravel()
+        T[:3, 3] = np.ravel(tvec)
         return T
 
 
@@ -184,9 +180,11 @@ def inv_T(T):
 
 # ----------------------------------------------------------------- screen mapping
 class ScreenMapper:
-    def __init__(self, reach, mirror, invert_y, smooth):
-        # gain: lateral displacement 'reach' (metres) at REF_DIST moves from centre to screen edge
-        self.gain = (SCREEN_W / 2.0) / (reach / REF_DIST_M)
+    def __init__(self, calib_dist, reach, mirror, invert_y, smooth):
+        self.T2 = np.eye(4)
+        self.T2[2, 3] = calib_dist
+        # px_per_m: a hit 'reach' metres from the centre on the screen plane = horizontal screen edge
+        self.px_per_m = (SCREEN_W / 2.0) / reach
         self.sx = -1.0 if mirror else 1.0   # camera looks at the user: image right = user's left
         self.sy = -1.0 if invert_y else 1.0
         self.smooth = smooth
@@ -196,26 +194,31 @@ class ScreenMapper:
 
     def calibrate(self, T1):
         self.T1_ref = T1.copy()
-        self.T3 = T2 @ inv_T(self.T1_ref)
-        self.filtered = None
+        self.T3 = self.T2 @ inv_T(self.T1_ref)
+        # at calibration T_rel = I -> the ray hits (0, 0) = screen centre: start the filter there
+        self.filtered = np.array([SCREEN_W / 2.0, SCREEN_H / 2.0])
+        return SCREEN_W // 2, SCREEN_H // 2
 
     def map(self, T1):
-        """Returns (px, py, T_rel, T_virt) or None if behind the virtual camera."""
+        """Ray cast of the tag normal onto the screen plane (z = 0 of the monitor frame).
+        Returns (px, py, T_rel, hit) or None if the tag does not point towards the screen."""
         T_rel = inv_T(self.T1_ref) @ T1
         T_virt = self.T3 @ T1            # == T2 @ T_rel
-        x, y, z = T_virt[:3, 3]
-        if z < 0.05:
+        p = T_virt[:3, 3]
+        d = T_virt[:3, :3] @ POINTING_AXIS
+        if p[2] <= 0.0 or d[2] > -0.1:   # behind the screen, or ray (almost) parallel / away (> ~84 deg)
             return None
-        u, v = x / z, y / z
-        px = SCREEN_W / 2.0 + self.sx * self.gain * u
-        py = SCREEN_H / 2.0 + self.sy * self.gain * v
-        if self.filtered is None or self.smooth <= 0:
+        s = -p[2] / d[2]
+        hit = p + s * d                  # metres on the screen plane, origin = screen centre
+        px = SCREEN_W / 2.0 + self.sx * self.px_per_m * hit[0]
+        py = SCREEN_H / 2.0 + self.sy * self.px_per_m * hit[1]
+        if self.smooth <= 0:
             self.filtered = np.array([px, py])
         else:
             self.filtered = self.smooth * self.filtered + (1.0 - self.smooth) * np.array([px, py])
         fx = int(round(min(max(self.filtered[0], 0), SCREEN_W - 1)))
         fy = int(round(min(max(self.filtered[1], 0), SCREEN_H - 1)))
-        return fx, fy, T_rel, T_virt
+        return fx, fy, T_rel, hit
 
 
 # ----------------------------------------------------------------- mouse output
@@ -401,8 +404,11 @@ def parse_args():
                    help="lato del quadrato nero del tag in metri (default 0.05)")
     p.add_argument("--tag-id", type=int, default=None, help="usa solo questo ID (default: primo tag visto)")
     p.add_argument("--index", type=int, default=0, help="indice device Kinect")
-    p.add_argument("--reach", type=float, default=0.20,
-                   help="spostamento laterale (m, a 60 cm) per portare il cursore dal centro al bordo")
+    p.add_argument("--calib-dist", type=float, default=DEFAULT_CALIB_DIST_M,
+                   help="distanza tag-schermo (m) al momento della calibrazione con INVIO (default 0.5)")
+    p.add_argument("--reach", type=float, default=0.30,
+                   help="metri sul piano dello schermo dal centro al bordo orizzontale "
+                        "(= mezza larghezza fisica del monitor per un puntatore 'laser' esatto; default 0.30)")
     p.add_argument("--no-mirror", action="store_true",
                    help="non specchiare l'asse X (usa se il cursore va al contrario in orizzontale)")
     p.add_argument("--invert-y", action="store_true", help="inverti l'asse Y")
@@ -415,6 +421,8 @@ def parse_args():
         p.error("--tag-size deve essere > 0")
     if args.reach <= 0:
         p.error("--reach deve essere > 0")
+    if args.calib_dist <= 0:
+        p.error("--calib-dist deve essere > 0")
     args.smooth = min(max(args.smooth, 0.0), 0.95)
     return args
 
@@ -436,7 +444,7 @@ def main():
         return 1
 
     estimator = TagPoseEstimator(args.tag_size)
-    mapper = ScreenMapper(args.reach, not args.no_mirror, args.invert_y, args.smooth)
+    mapper = ScreenMapper(args.calib_dist, args.reach, not args.no_mirror, args.invert_y, args.smooth)
     keys = queue.Queue()
     start_terminal_reader(keys)
     listener = start_global_listener(keys)
@@ -444,7 +452,8 @@ def main():
     print(f"Kinect: {cam.name} | tag36h11 {args.tag_size * 100:.1f} cm | schermo {SCREEN_W}x{SCREEN_H}")
     print(f"Mouse: {mouse.name}")
     print("Tastiera globale: " + (listener.name if listener else "non disponibile (usa terminale / finestra preview)"))
-    print("Posiziona il tag al centro dello schermo a ~60 cm. Premi INVIO per calibrare.")
+    print(f"Posiziona il tag al centro dello schermo a ~{args.calib_dist * 100:.0f} cm, rivolto verso lo schermo. "
+          "Premi INVIO per calibrare.")
 
     preview = not args.no_preview
     if preview:
@@ -489,10 +498,12 @@ def main():
                 last_key_t[key] = now
                 if key == "enter":
                     if last_T1 is not None and now - last_seen < TAG_LOST_HOLD_S:
-                        mapper.calibrate(last_T1)
+                        cx_px, cy_px = mapper.calibrate(last_T1)
                         active = True
+                        mouse.move(cx_px, cy_px)          # cursor starts from the screen centre
                         t = last_T1[:3, 3]
-                        print(f"T1_ref: t = [{t[0]:+.3f} {t[1]:+.3f} {t[2]:+.3f}] m")
+                        print(f"T1_ref: t = [{t[0]:+.3f} {t[1]:+.3f} {t[2]:+.3f}] m  "
+                              f"(T2 = 0, 0, {args.calib_dist:.2f}) -> cursore al centro ({cx_px}, {cy_px})")
                         print("Calibrazione OK — controllo mouse attivo. [SPAZIO] per pausa, Ctrl+C per uscire.")
                     else:
                         print("Tag non visibile: impossibile calibrare. Inquadra il tag e premi di nuovo INVIO.")
@@ -503,22 +514,25 @@ def main():
             # ---- mouse
             info = []
             if mapper.T3 is None:
-                status = "NON CALIBRATO - tag al centro a ~60 cm, premi INVIO"
+                status = f"NON CALIBRATO - tag al centro a ~{args.calib_dist * 100:.0f} cm, premi INVIO"
             else:
                 status = "ATTIVO" if active else "PAUSA (SPACE per riprendere)"
                 if T1 is not None:
                     res = mapper.map(T1)
                     if res is not None:
-                        px, py, T_rel, T_virt = res
+                        px, py, T_rel, hit = res
                         if active:
                             mouse.move(px, py)
                         d = T_rel[:3, 3]
                         info = [f"dT = [{d[0]:+.3f} {d[1]:+.3f} {d[2]:+.3f}] m",
+                                f"hit schermo = [{hit[0]:+.3f} {hit[1]:+.3f}] m",
                                 f"cursore = ({px}, {py})"]
                         if now - last_print > 0.5:
                             last_print = now
-                            print(f"dT=[{d[0]:+.3f} {d[1]:+.3f} {d[2]:+.3f}] m  z_virt={T_virt[2, 3]:.3f} m  "
+                            print(f"dT=[{d[0]:+.3f} {d[1]:+.3f} {d[2]:+.3f}] m  hit=[{hit[0]:+.3f} {hit[1]:+.3f}] m  "
                                   f"cursore=({px:4d},{py:4d}){'' if active else '  [pausa]'}")
+                    else:
+                        info = ["tag non punta verso lo schermo"]
                 else:
                     info = ["tag non visibile"]
 
