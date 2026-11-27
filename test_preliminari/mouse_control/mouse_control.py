@@ -6,10 +6,18 @@
   cursor more when the tag is far, like a laser pointer.
 - Small tags give a noisy orientation (several degrees when frontal), so the
   first --tilt-deadzone degrees of tilt are ignored.
-- Calibration = two sets of 5-8 points saved with ENTER, tag held straight:
+- Calibration = two sets of 13 points saved with ENTER, tag held straight:
   first a FAR set (normal pointing distance), then a NEAR set (tag pushed
-  towards the camera, as when clicking). Each set gives a homography
-  ray-hit XY -> screen; while tracking the two are blended according to Z.
+  towards the camera, as when clicking). In both sets the FIRST point is the
+  screen centre: it is the reference, and while calibrating the terminal prints
+  the live tag displacement dX dY dZ (mm, camera frame: X right, Y down, Z away
+  from the camera) from that centre. Before the NEAR centre is saved the
+  displacement is given w.r.t. the FAR centre (so dZ tells how much closer you are).
+- Mapping: one 3D affine map fitted by least squares on all FAR+NEAR points,
+      [px, py] = M @ [x, y, z, 1]      (M is 2x4, t = tag position in metres)
+  The z column absorbs the change of scale/offset between near and far, so a
+  single map works at any distance. Outliers (> 3x median residual) are dropped
+  and the map refitted; the residual of every point is printed.
 - Click thresholds come from the two sets: the left button is held when the tag
   gets close to the NEAR distance and released near the FAR one.
 - The HUD shows the tag rotation about its own Z axis, relative to the
@@ -18,6 +26,8 @@
 Mouse/keys backend: on Wayland the kernel uinput/evdev devices are used
 (input_backend.py), on X11 pynput. Keys are global; also on the HUD/camera window:
     ENTER  calibration: save the point / frozen: resume
+    h      calibration standby: stay on the current point (ENTER disabled) while you
+           adjust using the printed displacement; h again to unlock
     SPACE  clutch: cursor stays still, reposition the tag; SPACE/ENTER again resumes
     c      recalibrate                           q/ESC  quit
 """
@@ -55,12 +65,14 @@ STATE_ACTIVE = "ACTIVE"
 STATE_COLORS = {STATE_ACTIVE: "#2ecc71", STATE_FROZEN: "#f39c12", STATE_CALIBRATING: "#f1c40f"}
 
 CALIB_NORM = [
-    (0.2, 0.2), (0.8, 0.2), (0.5, 0.5),
-    (0.2, 0.8), (0.8, 0.8),
-    (0.5, 0.15), (0.5, 0.85),
-    (0.15, 0.5),
+    (0.50, 0.50),                                               # 0: centre = reference, always first
+    (0.07, 0.07), (0.50, 0.07), (0.93, 0.07),                   # 1-3: top row
+    (0.07, 0.50), (0.93, 0.50),                                 # 4-5: middle sides
+    (0.07, 0.93), (0.50, 0.93), (0.93, 0.93),                   # 6-8: bottom row
+    (0.28, 0.28), (0.72, 0.28), (0.28, 0.72), (0.72, 0.72),     # 9-12: inner ring
 ]
-MIN_CALIB_POINTS = 5
+MIN_CALIB_POINTS = 6           # per set, centre included (Conferma closes a set early)
+DISP_PRINT_S = 0.4             # displacement print period during calibration
 TAG_LOST_RELEASE_S = 0.5
 PIN_EVERY_S = 0.05      # re-assert the cursor position this often when the tag is not moving it
 PREVIEW_SIZE = (480, 360)
@@ -283,8 +295,9 @@ class MouseTagController:
         self.lock = threading.RLock()
         self.quit_flag = False
         self.state = STATE_CALIBRATING
-        self.H_far = self.H_near = None
+        self.M = None                         # 2x4 affine map [x, y, z, 1] -> screen pixel
         self.z_far = self.z_near = None
+        self._last_disp_t = 0.0
         self.click_near = args.click_near     # None = computed from the calibration
         self.click_far = args.click_far
         self.normal_filters = (OneEuro(1.0, 0.3), OneEuro(1.0, 0.3), OneEuro(1.0, 0.3))
@@ -314,9 +327,12 @@ class MouseTagController:
     # ------------------------------------------------------------ helpers
     def _reset_calibration(self):
         self.phase = "far"
-        self.sets = {"far": {}, "near": {}}   # idx -> (hit_x, hit_y, tag_z)
-        self.calib_idx = 0
-        self.calib_hist = []                  # (time, hit_x, hit_y, tag_z)
+        self.sets = {"far": {}, "near": {}}   # idx -> tag position t (3,) metres, tag held straight
+        self.center_t = {"far": None, "near": None}
+        self.calib_idx = 0                    # the centre (index 0) is always the first point
+        self.calib_hist = []                  # (time, t (3,))
+        self.standby = False
+        self.delta = None                     # live displacement from the centre reference (m)
         self.message = ""
 
     def _press(self):
@@ -339,10 +355,11 @@ class MouseTagController:
         return math.degrees(math.atan2(R_rel[1, 0], R_rel[0, 0]))
 
     def _aim(self, t, R, now):
-        """Intersection of the tag's pointing ray (its normal) with the screen plane Z = offset.
+        """Effective 3D tag position fed to the affine map (camera frame, metres).
 
-        hit = t_xy + (offset - t_z) * tan(tilt)   (camera frame, metres).
-        A straight tag gives hit = t_xy; tilting it shifts the hit by ~Z * tan(tilt).
+        Calibration: the tag is held straight, the position alone is used.
+        Tracking: X/Y are shifted by the ray-cast offset (screen_offset - Z) * tan(tilt)
+        (tilt beyond the dead zone only), Z is left untouched.
         """
         n = R[:, 2]
         n = n / np.linalg.norm(n)
@@ -353,40 +370,59 @@ class MouseTagController:
         self.tilt = math.degrees(math.acos(min(1.0, abs(n[2]))))
         if self.tilt > MAX_TILT_DEG:
             return None
+        p = np.array(t, dtype=np.float64).ravel()[:3].copy()
         if self.state == STATE_CALIBRATING:
-            return np.array([t[0], t[1]])               # calibration: tag held straight, position only
+            return p
         # soft dead zone: the pose of a small frontal tag wobbles by several degrees, so the
         # first --tilt-deadzone degrees are ignored and only the excess tilts the ray (no jump)
         ax, ay = math.atan2(n[0], n[2]), math.atan2(n[1], n[2])
         mag = math.hypot(ax, ay)
         dz = math.radians(self.args.tilt_deadzone)
         if mag <= dz:
-            return np.array([t[0], t[1]])
+            return p
         scale = (mag - dz) / mag
-        k = (self.args.screen_offset - t[2]) * self.args.tilt_gain
-        return np.array([t[0] + k * math.tan(ax * scale), t[1] + k * math.tan(ay * scale)])
+        k = (self.args.screen_offset - p[2]) * self.args.tilt_gain
+        p[0] += k * math.tan(ax * scale)
+        p[1] += k * math.tan(ay * scale)
+        return p
 
-    def _map(self, hit, z):
-        """Ray hit -> screen pixel: FAR and NEAR homographies blended by the tag Z."""
-        xy = np.array([[hit]], dtype=np.float64)
-        pf = cv2.perspectiveTransform(xy, self.H_far)[0, 0]
-        pn = cv2.perspectiveTransform(xy, self.H_near)[0, 0]
-        w = min(max((self.z_far - z) / (self.z_far - self.z_near), 0.0), 1.0)   # 0 FAR .. 1 NEAR
-        p = (1.0 - w) * pf + w * pn
-        return p if np.all(np.isfinite(p)) else None
+    def _reference(self):
+        """Centre used for the displacement read-out: the current set's centre, or the FAR centre
+        while the NEAR centre has not been saved yet. Returns (t, label) or (None, None)."""
+        if self.center_t[self.phase] is not None:
+            return self.center_t[self.phase], self.phase.upper()
+        if self.center_t["far"] is not None:
+            return self.center_t["far"], "FAR"
+        return None, None
+
+    def _report_position(self, p, now):
+        ref, label = self._reference()
+        self.delta = None if ref is None else p - ref
+        if now - self._last_disp_t < DISP_PRINT_S:
+            return
+        self._last_disp_t = now
+        sb = "[standby] " if self.standby else ""
+        tgt = f"{self.phase} target {self.calib_idx + 1}/{len(self.calib_points)}"
+        if ref is None:
+            print(f"[calib] {sb}{tgt}: tag X {p[0]:+.3f} Y {p[1]:+.3f} Z {p[2]:.3f} m (centre not saved yet)")
+        else:
+            d = self.delta * 1000.0
+            print(f"[calib] {sb}{tgt}: dX {d[0]:+6.0f}  dY {d[1]:+6.0f}  dZ {d[2]:+6.0f} mm  "
+                  f"from {label} centre")
 
     # ------------------------------------------------------------ camera thread
     def on_detection(self, tvec, R, now):
         t = tvec.ravel()
         with self.lock:
             self.last_seen, self.last_R, self.last_t, self.z = now, R, t, float(t[2])
-            hit = self._aim(t, R, now)
-            if hit is not None:
+            p = self._aim(t, R, now)
+            if p is not None:
                 if self.state == STATE_CALIBRATING:
-                    self.calib_hist.append((now, float(hit[0]), float(hit[1]), float(t[2])))
+                    self.calib_hist.append((now, p))
                     self.calib_hist = [h for h in self.calib_hist if now - h[0] <= CALIB_HISTORY_S]
+                    self._report_position(p, now)
                 elif self.state == STATE_ACTIVE:
-                    self._active_step(hit, t, R, now)
+                    self._active_step(p, t, R, now)
             self.yaw = self._yaw(R)
 
     def on_no_detection(self, now):
@@ -395,6 +431,7 @@ class MouseTagController:
                 self.release()       # safety: never keep the button down without a tag
                 self.z = None
                 self.tilt = None
+                self.delta = None
                 for f in self.normal_filters:
                     f.reset()
 
@@ -408,66 +445,109 @@ class MouseTagController:
                 return
 
     def _save_point(self):
-        """ENTER during calibration: store the ray hit for the highlighted point."""
+        """ENTER during calibration: store the (median) tag position for the highlighted point."""
+        if self.standby:
+            self.message = "standby attivo: premi h per sbloccare il salvataggio"
+            print("[calib] ENTER ignored: standby is on (press h)")
+            return
         now = time.monotonic()
         win = [h for h in self.calib_hist if now - h[0] <= CALIB_FRESH_S]
         if now - self.last_seen > CALIB_FRESH_S or not win:
             self.message = "tag non visibile (o troppo inclinato): punto NON salvato"
             print("[calib] ENTER ignored: tag not visible")
             return
-        x, y, z = (float(np.median([h[k] for h in win])) for k in (1, 2, 3))
-        if self.phase == "near" and z > self.z_far - MIN_Z_GAP:
-            self.message = (f"troppo lontano (Z {z:.2f} m): nel set VICINO tieni il tag sotto "
-                            f"{self.z_far - MIN_Z_GAP:.2f} m")
-            print(f"[calib] ENTER ignored: Z {z:.3f} m not closer than the FAR set")
+        p = np.median(np.array([h[1] for h in win]), axis=0)
+        idx = self.calib_idx
+        if idx != 0 and self.center_t[self.phase] is None:
+            self.calib_idx = 0
+            self.message = "prima va salvato il punto CENTRALE"
             return
-        self.sets[self.phase][self.calib_idx] = (x, y, z)
-        sp = tuple(int(v) for v in self.calib_points[self.calib_idx])
-        print(f"[calib] {self.phase} point {self.calib_idx + 1}: tag ({x:+.3f}, {y:+.3f}) m, "
-              f"Z {z:.3f} m -> screen {sp}")
+        if self.phase == "near" and p[2] > self.z_far - MIN_Z_GAP:
+            self.message = (f"troppo lontano (Z {p[2]:.2f} m): nel set VICINO tieni il tag sotto "
+                            f"{self.z_far - MIN_Z_GAP:.2f} m")
+            print(f"[calib] ENTER ignored: Z {p[2]:.3f} m not closer than the FAR set")
+            return
+        self.sets[self.phase][idx] = p
+        n = len(self.calib_points)
+        sp = tuple(int(v) for v in self.calib_points[idx])
+        if idx == 0:
+            self.center_t[self.phase] = p.copy()
+            extra = ""
+            if self.phase == "near":
+                d = (p - self.center_t["far"]) * 1000.0
+                extra = f"  (vs FAR centre dX {d[0]:+.0f} dY {d[1]:+.0f} dZ {d[2]:+.0f} mm)"
+            print(f"[calib] {self.phase} CENTRE saved: X {p[0]:+.3f} Y {p[1]:+.3f} Z {p[2]:.3f} m{extra}")
+        else:
+            d = (p - self.center_t[self.phase]) * 1000.0
+            print(f"[calib] {self.phase} point {idx + 1}/{n}: dX {d[0]:+.0f} dY {d[1]:+.0f} "
+                  f"dZ {d[2]:+.0f} mm from centre -> screen {sp}")
         self.message = ""
-        if len(self.sets[self.phase]) == len(self.calib_points):
+        if len(self.sets[self.phase]) == n:
             self._end_phase()
         else:
             self._advance()
 
-    def _fit(self, reg):
-        idx = sorted(reg)
-        src = np.array([reg[i][:2] for i in idx], dtype=np.float64)
-        dst = np.array([self.calib_points[i] for i in idx], dtype=np.float64)
-        thr = 0.08 * max(self.screen.w, self.screen.h)  # hand pointing is noisy: tolerant RANSAC
-        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, thr)
-        if H is None or mask is None or int(mask.sum()) < 4:
-            H, _ = cv2.findHomography(src, dst, 0)      # least squares on all points
-        if H is None:
-            return None, None
-        err = np.linalg.norm(cv2.perspectiveTransform(src[None], H)[0] - dst, axis=1)
-        return H, float(err.mean())
+    def _fit_affine(self):
+        """Least-squares 3D affine map on all FAR+NEAR points: [px, py] = M @ [x, y, z, 1].
+
+        One pass of outlier rejection (residual > 3x median, at least 3% of the screen).
+        Returns (M, residuals_px, keep_mask, labels) or (None, ...) if degenerate."""
+        rows, dst, labels = [], [], []
+        for ph in ("far", "near"):
+            for i in sorted(self.sets[ph]):
+                t = self.sets[ph][i]
+                rows.append([t[0], t[1], t[2], 1.0])
+                dst.append(self.calib_points[i])
+                labels.append(f"{ph} {i + 1}")
+        A = np.array(rows, dtype=np.float64)
+        B = np.array(dst, dtype=np.float64)
+        if len(A) < 5 or np.linalg.matrix_rank(A) < 4:
+            return None, None, None, labels
+        X = np.linalg.lstsq(A, B, rcond=None)[0]              # 4x2
+        err = np.linalg.norm(A @ X - B, axis=1)
+        keep = err <= max(3.0 * float(np.median(err)), 0.03 * max(self.screen.w, self.screen.h))
+        if not keep.all() and keep.sum() >= 5 and np.linalg.matrix_rank(A[keep]) == 4:
+            X = np.linalg.lstsq(A[keep], B[keep], rcond=None)[0]
+            err = np.linalg.norm(A @ X - B, axis=1)
+        else:
+            keep = np.ones(len(A), dtype=bool)
+        M = X.T                                                # 2x4
+        if not np.all(np.isfinite(M)):
+            return None, None, None, labels
+        return M, err, keep, labels
 
     def _end_phase(self):
         reg = self.sets[self.phase]
-        H, err = self._fit(reg)
-        if H is None:
-            print(f"[calib] {self.phase} set: homography failed, repeat the set")
-            self.sets[self.phase] = {}
-            self.calib_idx = 0
-            self.message = f"set {PHASE_LABEL[self.phase]} non valido: ripetilo con punti piu' distinti"
-            return
         z = float(np.median([v[2] for v in reg.values()]))
-        print(f"[calib] {self.phase} set: {len(reg)} points, Z median {z:.3f} m, error {err:.0f} px")
+        print(f"[calib] {self.phase} set: {len(reg)} points, Z median {z:.3f} m, "
+              f"centre Z {self.center_t[self.phase][2]:.3f} m")
         if self.phase == "far":
-            self.H_far, self.z_far = H, z
+            self.z_far = z
             self.phase = "near"
-            self.calib_idx = -1
-            self._advance()
-            self.message = f"set LONTANO salvato (Z {z:.2f} m): ora avvicina il tag e ripeti i punti"
+            self.calib_idx = 0                                 # NEAR set: centre first again
+            self.message = f"set LONTANO salvato (Z {z:.2f} m): avvicina il tag, prima il CENTRO"
             return
         if self.z_far - z < MIN_Z_GAP:
             self.sets["near"] = {}
+            self.center_t["near"] = None
             self.calib_idx = 0
             self.message = "set VICINO troppo simile al LONTANO: avvicina di piu' il tag"
             return
-        self.H_near, self.z_near = H, z
+        M, err, keep, labels = self._fit_affine()
+        if M is None:
+            print("[calib] affine fit failed (degenerate points): repeat the NEAR set")
+            self.sets["near"] = {}
+            self.center_t["near"] = None
+            self.calib_idx = 0
+            self.message = "fit non riuscito: ripeti il set VICINO con punti piu' distinti"
+            return
+        self.M, self.z_near = M, z
+        print(f"[calib] affine map: mean error {err[keep].mean():.0f} px, max {err[keep].max():.0f} px "
+              f"on {int(keep.sum())}/{len(keep)} points")
+        for lab, e, k in zip(labels, err, keep):
+            print(f"[calib]   {lab:>8}: {e:6.0f} px{'' if k else '  (outlier, discarded)'}")
+        np.set_printoptions(precision=1, suppress=True)
+        print(f"[calib] M (px per m | px):\n{self.M}")
         gap = self.z_far - self.z_near
         if self.args.click_near is None:
             self.click_near = self.z_near + PRESS_AT * gap
@@ -481,17 +561,18 @@ class MouseTagController:
         self.offset = np.zeros(2)
         self.rebase_pending = False
         self.click_armed = False
+        self.standby = False
         for f in self.filters:
             f.reset()
         self.message = ""
         self.state = STATE_ACTIVE
         print("[state] ACTIVE")
 
-    def _active_step(self, hit, t, R, now):
-        if self.H_near is None:
+    def _active_step(self, p, t, R, now):
+        if self.M is None:
             return
-        raw = self._map(hit, t[2])
-        if raw is None:
+        raw = self.M @ np.array([p[0], p[1], p[2], 1.0])
+        if not np.all(np.isfinite(raw)):
             return
         if self.rebase_pending:
             # clutch: keep the cursor where it was frozen, continue from the tag's new position
@@ -501,9 +582,9 @@ class MouseTagController:
             self.rebase_pending = False
             for f in self.filters:
                 f.reset()
-        p = raw + self.offset
-        sx = self.filters[0](float(p[0]), now)
-        sy = self.filters[1](float(p[1]), now)
+        q = raw + self.offset
+        sx = self.filters[0](float(q[0]), now)
+        sy = self.filters[1](float(q[1]), now)
         sx, sy = self.screen.clamp(sx, sy)
         self.mouse.position = (int(sx), int(sy))
         self.pin = (int(sx), int(sy))
@@ -542,7 +623,7 @@ class MouseTagController:
             if self.state != STATE_FROZEN:
                 return
             self.release()
-            if self.H_near is None:
+            if self.M is None:
                 self.state = STATE_CALIBRATING
             else:
                 self.rebase_pending = True    # R0 + offset taken from the next detection
@@ -567,14 +648,32 @@ class MouseTagController:
 
     def skip_point(self):
         with self.lock:
-            if self.state == STATE_CALIBRATING:
+            if self.state != STATE_CALIBRATING:
+                return
+            if self.center_t[self.phase] is None:
+                self.message = "il CENTRO non si puo' saltare: e' il riferimento"
+                return
+            self._advance()
+            if self.calib_idx == 0:            # never land back on the (already saved) centre
                 self._advance()
 
     def confirm(self):
-        """Close the current set early (needs MIN_CALIB_POINTS points)."""
+        """Close the current set early (needs the centre and MIN_CALIB_POINTS points)."""
         with self.lock:
-            if self.state == STATE_CALIBRATING and len(self.sets[self.phase]) >= MIN_CALIB_POINTS:
+            if (self.state == STATE_CALIBRATING and self.center_t[self.phase] is not None
+                    and len(self.sets[self.phase]) >= MIN_CALIB_POINTS):
                 self._end_phase()
+
+    def toggle_standby(self):
+        """h: hold the current calibration point (ENTER disabled) while adjusting the tag."""
+        with self.lock:
+            if self.state != STATE_CALIBRATING:
+                return
+            self.standby = not self.standby
+            self.message = ("STANDBY: regola il tag col displacement stampato, h per sbloccare"
+                            if self.standby else "")
+            print(f"[calib] standby {'ON' if self.standby else 'OFF'} "
+                  f"({self.phase} point {self.calib_idx + 1})")
 
     def hold_cursor(self):
         """Main thread, every tick: keep the cursor on its pin (calibration target, frozen spot,
@@ -582,7 +681,11 @@ class MouseTagController:
         with self.lock:
             if self.state == STATE_CALIBRATING:
                 self.pin = tuple(int(v) for v in self.calib_points[self.calib_idx])
-            if self.pin is None or time.monotonic() - self.last_move < PIN_EVERY_S:
+            if self.pin is None:
+                return
+            # only while the tag itself is driving the cursor can the re-assert be skipped;
+            # FROZEN / CALIBRATING always pin (otherwise the physical mouse steals the cursor)
+            if self.state == STATE_ACTIVE and time.monotonic() - self.last_move < PIN_EVERY_S:
                 return
             try:
                 self.mouse.hold(self.pin)
@@ -602,6 +705,8 @@ class MouseTagController:
                 "pressed": self.pressed, "fps": self.fps, "error": self.error, "message": self.message,
                 "phase": self.phase, "calib_idx": self.calib_idx,
                 "calib_done": set(self.sets[self.phase]), "z_far": self.z_far,
+                "standby": self.standby, "delta": None if self.delta is None else self.delta.copy(),
+                "center_set": self.center_t[self.phase] is not None,
                 "click_near": self.click_near, "click_far": self.click_far,
                 "click_armed": self.click_armed, "tag_norm": self.tag_norm,
                 "tag_fresh": time.monotonic() - self.last_seen <= CALIB_FRESH_S,
@@ -779,7 +884,7 @@ class CalibrationOverlay:
             elif i != idx:
                 c.create_oval(x - 6, y - 6, x + 6, y + 6, outline="#6c757d", width=2, tags="dyn")
         # current target
-        col_phase = PHASE_COLOR[s["phase"]]
+        col_phase = "#e74c3c" if s["standby"] else PHASE_COLOR[s["phase"]]
         px, py = self.ctl.calib_points[idx]
         x, y = px - sc.x, py - sc.y
         r = 30
@@ -788,13 +893,21 @@ class CalibrationOverlay:
 
         k = len(done) + 1 if len(done) < n else n
         if s["phase"] == "far":
-            text = (f"Set 1/2  LONTANO \u2014 punto {k}/{n}: tag dritto alla distanza normale, "
-                    f"spostalo verso il cerchio (il cursore e' li') e premi INVIO")
+            where = "alla distanza normale"
+            set_lbl = "Set 1/2  LONTANO"
         else:
-            text = (f"Set 2/2  VICINO \u2014 punto {k}/{n}: tag dritto e avvicinato come per cliccare "
-                    f"(sotto {s['z_far'] - MIN_Z_GAP:.2f} m), spostalo verso il cerchio e premi INVIO")
-        # header lives in the free band between the 0.2 and 0.5 rows of calibration points
-        ty = int(sc.h * 0.30)
+            where = f"avvicinato come per cliccare (sotto {s['z_far'] - MIN_Z_GAP:.2f} m)"
+            set_lbl = "Set 2/2  VICINO"
+        if not s["center_set"]:
+            text = (f"{set_lbl} \u2014 punto 1/{n}: CENTRO dello schermo. Tag dritto {where}, "
+                    f"puntalo al centro e premi INVIO (h = standby per regolarti)")
+        else:
+            text = (f"{set_lbl} \u2014 punto {k}/{n}: tag dritto {where}, "
+                    f"spostalo verso il cerchio e premi INVIO")
+        if s["standby"]:
+            text = "STANDBY (h per sbloccare)  \u2014  " + text
+        # header lives in the free band between the 0.28 and 0.5 rows of calibration points
+        ty = int(sc.h * 0.36)
         fs = max(12, min(18, sc.w // 70))
         c.create_text(sc.w // 2, ty, text=text, fill="white", font=("DejaVu Sans", fs, "bold"),
                       width=int(sc.w * 0.8), justify="center", tags="dyn")
@@ -805,6 +918,9 @@ class CalibrationOverlay:
             sub.append(f"Z = {s['z']:.3f} m")
             if s["tilt"] is not None:
                 sub.append(f"inclinazione {s['tilt']:.0f}\u00b0")
+        if s["delta"] is not None:
+            d = s["delta"] * 1000.0
+            sub.append(f"dX {d[0]:+.0f}  dY {d[1]:+.0f}  dZ {d[2]:+.0f} mm dal centro")
         if s["z_far"] is not None:
             sub.append(f"set LONTANO: Z {s['z_far']:.2f} m")
         if s["message"]:
@@ -850,7 +966,7 @@ class CalibrationOverlay:
 # ----------------------------------------------------------------- keyboard
 def key_dispatcher(ctl):
     actions = {"space": ctl.toggle_freeze, "enter": ctl.enter, "esc": ctl.request_quit,
-               "q": ctl.request_quit, "c": ctl.recalibrate}
+               "q": ctl.request_quit, "c": ctl.recalibrate, "h": ctl.toggle_standby}
     return lambda name: actions.get(name, lambda: None)()
 
 
@@ -864,6 +980,8 @@ def handle_local_key(ctl, k):
         ctl.request_quit()
     elif k in (ord("c"), ord("C")):
         ctl.recalibrate()
+    elif k in (ord("h"), ord("H")):
+        ctl.toggle_standby()
 
 
 # ----------------------------------------------------------------- main
@@ -954,6 +1072,7 @@ def main():
         w.bind_all("<Escape>", lambda e: ctl.request_quit())
         w.bind_all("q", lambda e: ctl.request_quit())
         w.bind_all("c", lambda e: ctl.recalibrate())
+        w.bind_all("h", lambda e: ctl.toggle_standby())
 
     try:
         kb = make_keyboard(args.keys, key_dispatcher(ctl))
