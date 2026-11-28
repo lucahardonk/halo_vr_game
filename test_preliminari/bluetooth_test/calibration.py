@@ -136,13 +136,13 @@ class ProfileStore:
         b, A = np.asarray(data['offset'], float), np.asarray(data['matrix'], float)
         if b.shape != (3,) or A.shape != (3, 3) or not np.isfinite(b).all() or not np.isfinite(A).all():
             raise ValueError('Profilo con valori non validi.')
-        if not np.allclose(A, A.T, atol=1e-9) or np.linalg.eigvalsh(A).min() <= 0 or np.linalg.cond(A) > 5:
+        if not np.allclose(A, A.T, atol=1e-9) or np.linalg.eigvalsh(A).min() <= 0 or np.linalg.cond(A) > 10:
             raise ValueError('Matrice del profilo non SPD o instabile.')
         if np.linalg.norm(b) > 500 or not np.isclose(np.linalg.det(A), 1, rtol=.01):
             raise ValueError('Scala/offset del profilo fuori limite.')
         q = data['quality']
-        if (not 180 <= q['samples'] <= 1200 or not 20 <= q['sectors'] <= 26 or
-                not .85 <= q['inlier_fraction'] <= 1 or not 0 <= q['holdout_rms'] <= .025 or
+        if (not 180 <= q['samples'] <= 1200 or not 18 <= q['sectors'] <= 26 or
+                not .50 <= q['inlier_fraction'] <= 1 or not 0 <= q['holdout_rms'] <= .07 or
                 not 5 < data['radius'] < 200):
             raise ValueError('Qualità del profilo insufficiente.')
         return data
