@@ -1,0 +1,8 @@
+# Fusione AprilTag (Kinect v1) + gyro IMU (BLE) con correzione slerp.
+# Fa parte del venv unico test_preliminari/.venv (vedi ../setup_venv.sh).
+#
+# La modalita' --demo (camera + IMU sintetiche) richiede SOLO numpy.
+# Per l'hardware reale servono anche opencv (Kinect/AprilTag) e dbus-fast (BLE).
+numpy
+opencv-contrib-python>=4.7     # camera Kinect v1 + rilevamento/posa AprilTag
+dbus-fast>=2.0; sys_platform == "linux"   # streaming gyro via BlueZ (solo IMU reale)

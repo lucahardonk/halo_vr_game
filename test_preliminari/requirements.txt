@@ -9,3 +9,4 @@
 -r kinect_base/2_apriltag_pose/requirements.txt
 -r mouse_control/requirements.txt
 -r bluetooth_test/requirements.txt
+-r fusion_camera_gyro/requirements.txt
