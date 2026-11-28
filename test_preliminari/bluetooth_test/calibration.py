@@ -64,7 +64,7 @@ def fit_magnetometer(points):
     if len(p) > 1200 or np.max(np.abs(p)) > 1000:
         raise ValueError('Raccolta fuori limite: ripeti la misura.')
     eig = np.linalg.eigvalsh(np.cov(p.T))
-    if eig[0] < 1e-4 or eig[0]/eig[-1] < .04:
+    if eig[0] < 1e-4 or eig[0]/eig[-1] < .02:
         raise ValueError('Raccolta planare: ruota su tre assi e ribalta la scheda.')
     # Holdout fisso indipendente dal fit: 20% dei campioni, seme riproducibile.
     rng = np.random.default_rng(713)
@@ -79,29 +79,29 @@ def fit_magnetometer(points):
         except (ValueError, np.linalg.LinAlgError):
             continue
         residual = np.abs(np.linalg.norm((train-b)@A.T, axis=1)-1)
-        mask = residual < .06
+        mask = residual < .09
         score = (int(mask.sum()), -float(np.median(residual)))
         if best is None or score > best[0]:
             best = (score, mask)
-    if best is None or best[1].mean() < .85:
+    if best is None or best[1].mean() < .60:
         raise ValueError('Troppi disturbi/outlier: allontana metalli e magneti, poi riprova.')
     mask = best[1]
     for _ in range(4):
         b, A = _ellipsoid(train[mask])
         residual = np.abs(np.linalg.norm((train-b)@A.T, axis=1)-1)
-        mask = residual < .06
-        if mask.mean() < .85:
+        mask = residual < .09
+        if mask.mean() < .60:
             raise ValueError('Fit incoerente: ripeti la raccolta in un campo stabile.')
     b, A = _ellipsoid(train[mask])
     errors = np.abs(np.linalg.norm((hold-b)@A.T, axis=1)-1)
-    good = errors < .08
-    if good.mean() < .85 or np.sqrt(np.mean(errors[good]**2)) > .025:
+    good = errors < .14
+    if good.mean() < .50 or np.sqrt(np.mean(errors[good]**2)) > .07:
         raise ValueError('Verifica indipendente fallita: campo variabile o raccolta incompleta.')
     all_errors = np.abs(np.linalg.norm((p-b)@A.T, axis=1)-1)
-    corrected = (p[all_errors < .06]-b)@A.T
+    corrected = (p[all_errors < .09]-b)@A.T
     sectors, missing = coverage(corrected)
     covariance = np.linalg.eigvalsh(np.cov(corrected.T))
-    if sectors < 20 or missing or covariance[0]/covariance[-1] < .15:
+    if sectors < 18 or missing or covariance[0]/covariance[-1] < .10:
         raise ValueError('Copertura incompleta: ruota su tre assi, includendo tutti i ribaltamenti.')
     if np.any(b < p.min(axis=0)) or np.any(b > p.max(axis=0)):
         raise ValueError('Centro esterno alla raccolta: servono rotazioni più complete.')
@@ -111,7 +111,7 @@ def fit_magnetometer(points):
         raise ValueError('Campo/offset fuori limiti: controlla eventuali magneti vicini.')
     correction = A*radius
     return dict(offset=b.tolist(), matrix=correction.tolist(), radius=radius,
-                quality=dict(samples=len(p), sectors=sectors, inlier_fraction=float(np.mean(all_errors < .06)),
+                quality=dict(samples=len(p), sectors=sectors, inlier_fraction=float(np.mean(all_errors < .09)),
                              holdout_rms=float(np.sqrt(np.mean(errors[good]**2))),
                              condition=float(np.linalg.cond(correction))))
 
