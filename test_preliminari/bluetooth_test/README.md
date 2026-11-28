@@ -166,3 +166,158 @@ Controllo a mano: `bluetoothctl info 18:FE:03:D9:D4:4B` → deve dire `Connected
 
 > Nota: firmware e script sono stati controllati per sintassi e struttura in questo ambiente,
 > ma **non sono stati compilati né provati su hardware reale**: le frequenze indicate sono stime teoriche.
+
+
+
+### 7. Visualizzatore locale: avvio sul NUC
+
+Estensione del ricevitore esistente: **nessuna modifica a `bluetooth_test.ino`**, nessuna
+scansione BLE, nessuna chiamata Connect/Disconnect. Restano le sette letture D2–D8 e la
+stampa ordinata di ogni notifica con Hz. Flask serve solo `127.0.0.1`, non la rete locale.
+
+**Sul tuo Intel NUC**, usando il checkout e il venv già esistenti:
+
+```bash
+cd ~/Documents/halo_vr_game
+git pull --ff-only origin main
+source test_preliminari/.venv/bin/activate
+python -m pip install -r test_preliminari/bluetooth_test/requirements.txt
+cd test_preliminari/bluetooth_test
+python test_receiver.py --address 18:FE:03:D9:D4:4B
+```
+
+Connetti `IMU_BTN` da **Impostazioni → Bluetooth → Connection ON**, come prima.
+Apri **nel browser dello stesso NUC**: **http://127.0.0.1:5000**.
+Tieni la scheda ferma per almeno 1,5 s: il riferimento viene acquisito automaticamente.
+Il pulsante **Azzera riferimento** prende l'orientamento corrente come nuovo zero.
+
+Varianti (una sola istanza per scheda):
+
+```bash
+python test_receiver.py --demo          # dati SINTETICI, nessun accesso a BlueZ
+python test_receiver.py --no-web        # solo terminale
+python test_receiver.py --port 5050      # se la porta 5000 è occupata
+python -m unittest -v test_orientation.py
+```
+
+Con `--port 5050`, l'indirizzo sul NUC diventa `http://127.0.0.1:5050`.
+Il requirements aggregatore già include questo file: non occorre modificarlo o creare un
+secondo venv. Il frontend include Three.js e texture **locali**, senza CDN, font o modelli
+remoti; dopo l'installazione non serve internet. Il server non usa debug/reloader.
+Ctrl+C o SIGTERM chiudono server e sottoscrizione; la connessione della GUI resta aperta.
+
+### 8. Algoritmo effettivo e motivazione
+
+**Madgwick MARG**: integrazione del giroscopio più correzione a discesa del gradiente
+basata su accelerometro e magnetometro. Fallback **Madgwick IMU** (accel+gyro) quando il
+magnetometro è nullo o non mostra cambiamenti da 0,5 s; l'interfaccia segnala che lo yaw
+può derivare. Il ritorno di valori magnetici diversi riattiva MARG.
+
+Il filtro è implementato in modo esplicito in `orientation.py`, seguendo le equazioni
+12, 25/26, 31/32 e 33 del lavoro di Madgwick e l'implementazione di riferimento
+[`ahrs` 0.4.0](https://github.com/Mayitzin/ahrs/blob/v0.4.0/ahrs/filters/madgwick.py).
+Non è un semplice filtro separato sui tre angoli. La suite confronta gli aggiornamenti
+IMU e MARG con `ahrs.filters.Madgwick` su 100 ingressi pseudocasuali ciascuno.
+
+Due protezioni esplicite rispetto a quella versione della libreria: correzione anche con
+giroscopio esattamente zero (la libreria restituisce subito il quaternione precedente),
+e controllo della norma del gradiente prima della divisione. Nessuna modifica alla
+libreria installata. La licenza MIT di riferimento è inclusa in `docs/AHRS-LICENSE.txt`.
+
+**Perché Madgwick:** adatto a questo piccolo strumento 9 assi, costo contenuto, stato in
+quaternione e fusione verificabile senza introdurre un EKF e una modellazione del moto
+che questo test non richiede. Guadagno `beta=0.06`: compromesso iniziale, non una taratura
+sperimentale della tua scheda. `ahrs==0.4.0` resta una dipendenza per i test di equivalenza.
+
+- Accelerazione ricevuta in m/s²; gyro da °/s a **rad/s**; campo magnetico in µT,
+  normalizzato dal filtro (la scala uniforme non influisce sulla direzione).
+- `dt` misurato con `time.monotonic()` alla ricezione, mai derivato dagli FPS del browser.
+  Fusione al massimo a 100 Hz; eventuali passi numerici intermedi non sono nuovi campioni.
+- Inizializzazione: almeno 1,5 s di accel prossima a 1 g (±0,8 m/s²), gyro sotto 3 °/s e
+  variazione accel tra notifiche sotto 0,3 m/s². Media delle letture, tilt e heading iniziali;
+  senza mag si inizializza lo yaw a zero. Questa è una verifica di quiete, **non** stima del
+  bias gyro né certificazione della qualità del campo magnetico.
+- Quaternione normalizzato a ogni aggiornamento; nessuna doppia integrazione e nessuna
+  stima di traslazione: «posizione iniziale» significa esclusivamente orientamento.
+
+### 9. Assi Rev2: fonti e convenzioni riproducibili
+
+Il firmware invia le uscite della libreria, non i registri grezzi del chip. Il profilo
+implementato presume Nano 33 BLE Sense **Rev2** e la libreria Arduino_BMI270_BMM150 1.2.1:
+
+1. Nel [codice ufficiale Arduino, tag 1.2.1](https://github.com/arduino-libraries/Arduino_BMI270_BMM150/blob/1.2.1/src/BMI270.cpp),
+   `readAcceleration` e `readGyroscope`, sotto `TARGET_ARDUINO_NANO33BLE`, restituiscono
+   `x=-raw.y`, `y=-raw.x`, `z=raw.z`. `readMagneticField` restituisce `mag_data.x/y/z`.
+   **Non** riapplichiamo al payload la permutazione già fatta dal firmware.
+2. [`ReefwingAHRS::setData`, revisione 7a2bf9c](https://github.com/Reefwing-Software/Reefwing-AHRS/blob/7a2bf9c3095d03f949f447e29ed6473adddedb87/src/ReefwingAHRS.cpp)
+   applica, per `BMI270_BMM150`, `my=-my` lasciando gli altri canali invariati.
+   `rev2_axes()` adotta esplicitamente questo profilo di libreria:
+   `a=(ax,ay,az)`, `g=radians(gx,gy,gz)`, `m=(mx,-my,mz)`.
+
+Questa è una verifica delle **fonti software**, non una misura dell'allineamento fisico
+sulla tua scheda. Non viene inventata una nuova mappatura sulla base di una schermata,
+né affermato che i segni della serigrafia siano stati verificati. Revisioni della libreria,
+firmware modificati e diverso montaggio richiedono un controllo sul NUC: scheda ferma,
+inclinazioni isolate su ciascun asse, poi rotazione nota di 90°; verificare che accel,
+gyro e magnetometro siano coerenti prima di usare l'orientamento in logica applicativa.
+Il test matematico verifica il profilo implementato, **non può validare l'hardware**.
+Il visualizzatore non è certificato per navigazione o controllo di attuatori.
+
+**Convenzioni:**
+
+- Quaternione Hamilton `[w,x,y,z]`, rotazione attiva corpo→mondo. Il modello matematico
+  è destrorso; Z mondiale è la direzione dell'accelerazione di quiete e X è la componente
+  orizzontale del campo magnetico, non il nord geografico certificato.
+- `q_rel = conjugate(q_ref) ⊗ q_corrente`: orientamento del corpo espresso nella terna
+  iniziale. Non sottraiamo roll/pitch/yaw e non usiamo l'ordine inverso del prodotto.
+- Euler per i numeri: `R = Rz(yaw) Ry(pitch) Rx(roll)`, gradi; roll/yaw in ±180°,
+  pitch in ±90°. Il salto numerico 179°→−179° è normale; vicino a pitch ±90° gli Euler
+  hanno singolarità, il quaternione e il velivolo no.
+- Aeroplano: muso +X, ala sinistra +Y, dorso +Z. Segni con regola della mano destra;
+  non sono la convenzione aeronautica NED (pitch positivo qui abbassa il muso).
+- WebGL Y-up: cambio base proprio `B: (x,y,z) → (x,z,−y)`;
+  `q_web = B ⊗ q_rel ⊗ B⁻¹`, poi componenti Three.js `[x,y,z,w]`.
+  Anche la geometria di base riceve B. Il modello non usa Euler per orientarsi.
+
+### 10. Temporizzazione, freschezza e limiti
+
+Il payload di 37 byte resta invariato: **mancano timestamp del sensore, contatori di
+campione e flag di freschezza**. Gli Hz stampati misurano notifiche, non campioni fisici
+indipendenti. I dati dei tre sensori non sono necessariamente simultanei; magnetometro
+più lento, campioni ripetuti e ritardi BLE possono influire sulla fusione.
+
+La rilevazione di aggiornamento magnetico confronta i valori, non un contatore hardware:
+valori identici per 0,5 s sono trattati cautelativamente come non aggiornati. Anche un
+sensore fermo ma funzionante può quindi causare fallback IMU; un nuovo valore non prova
+che l'intero frame sia fresco. Fra aggiornamenti il mag è mantenuto costante. Il backend
+non promette oltre 100 Hz di orientamenti indipendenti né precisione temporale da tracker.
+
+- Oltre 0,5 s senza frame valido: **stale**, aeroplano e numeri nascosti, reset disabilitato.
+- Alla disconnessione: **disconnesso**, nessun orientamento valido. Alla ripresa dopo un
+  vuoto temporale si richiede nuovamente quiete e si acquisisce un nuovo riferimento;
+  nessuna integrazione del gyro attraverso l'intervallo mancante.
+- Avvio senza dati: **attesa/inizializzazione**, non un finto orientamento a zero.
+- Backend non raggiungibile: interfaccia scollegata e dati nascosti.
+- `Azzera riferimento` cambia solo il riferimento: **non calibra** hard/soft iron, bias gyro,
+  assi o disturbi da NUC, cavi, magneti e oggetti metallici. Accelerazioni lineari possono
+  contaminare la stima della gravità. Prima di misure affidabili serve calibrazione dedicata.
+
+Ricezione e fusione girano nell'event loop asyncio originale; Flask in un thread separato,
+snapshot protetti da lock. Il browser legge lo stato circa 20 volte/s e disegna con
+`requestAnimationFrame`: nessun polling grafico rallenta intenzionalmente la frequenza BLE.
+La stampa di ogni frame è preservata e può comunque costituire un collo di bottiglia.
+Il reset usa POST e token per pagina; non è attivabile da GET. Solo loopback, nessun hosting.
+
+### 11. Verifiche e file
+
+- `test_orientation.py`: orientamenti noti, yaw ±180°, riferimento inclinato, cambio base,
+  confronto con AHRS, gyro zero, traiettorie sintetiche sui tre assi, mag nullo/bloccato,
+  inizializzazione, dati invalidi/stale, Flask/reset e cleanup D-Bus con bus simulato.
+- `scripts/verify_browser.py`: integrazione Flask/demo, pulsante reset, conversione nel
+  browser, stati senza dati e SIGTERM; necessita Playwright solo per lo sviluppo.
+- `docs/VERIFICA.md`: esiti effettivi delle verifiche, incluse immagini GPU.
+- `docs/ART_DIRECTION.md`: riferimento del piccolo strumento diagnostico, non di un gioco.
+
+Nessun test eseguito qui legge i tuoi sensori. La demo è esplicitamente marcata e attraversa
+lo stesso filtro delle letture reali; i risultati sintetici non certificano accuratezza,
+segni fisici, throughput BLE o compatibilità del tuo specifico adattatore BlueZ su Ubuntu 26.

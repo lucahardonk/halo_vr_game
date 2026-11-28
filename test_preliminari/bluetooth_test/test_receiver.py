@@ -11,6 +11,12 @@ import asyncio
 import struct
 import sys
 import time
+import signal
+import math
+
+import numpy as np
+from orientation import Orientation, from_euler, conjugate, multiply, matrix
+from viewer import Viewer
 from collections import deque
 
 from dbus_fast import BusType, Message, MessageType
@@ -133,16 +139,16 @@ async def wait_for_device(bus: MessageBus, address: str | None):
         await asyncio.sleep(1.0)
 
 
-async def add_match(bus: MessageBus, path: str) -> None:
+async def add_match(bus: MessageBus, path: str, remove=False) -> None:
     rule = (f"type='signal',sender='{BLUEZ}',interface='{PROPS_IFACE}',"
             f"member='PropertiesChanged',path='{path}'")
     await call(
         bus, destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
-        interface="org.freedesktop.DBus", member="AddMatch", signature="s", body=[rule],
+        interface="org.freedesktop.DBus", member="RemoveMatch" if remove else "AddMatch", signature="s", body=[rule],
     )
 
 
-async def run_session(bus: MessageBus, stats: FrameStats, address: str | None) -> None:
+async def run_session(bus: MessageBus, stats: FrameStats, address: str | None, state=None) -> None:
     dev_path, dev_props, char_path, char_props = await wait_for_device(bus, address)
     print(f"Trovato {_val(dev_props, 'Alias')} [{_val(dev_props, 'Address')}] connesso.")
     mtu = _val(char_props, "MTU")
@@ -166,38 +172,55 @@ async def run_session(bus: MessageBus, stats: FrameStats, address: str | None) -
                     print(f"ATTENZIONE: ricevuti {len(data)} byte invece di {PAYLOAD_SIZE}. "
                           "Probabile MTU = 23 (max 20 byte): vedi README, sezione MTU.", file=sys.stderr)
                 return None
-            print(format_frame(stats.tick(), struct.unpack(PAYLOAD_FMT, data)), flush=True)
+            values = struct.unpack(PAYLOAD_FMT, data)
+            hz = stats.tick()
+            if state:
+                state.feed(values)
+            print(format_frame(hz, values), flush=True)
         elif msg.path == dev_path and iface == DEVICE_IFACE and "Connected" in changed:
             if not changed["Connected"].value:
                 disconnected.set()
         return None
 
-    await add_match(bus, char_path)
-    await add_match(bus, dev_path)
+    matches = []
     bus.add_message_handler(handler)
     try:
+        for path in (char_path, dev_path):
+            await add_match(bus, path)
+            matches.append(path)
         await call(bus, destination=BLUEZ, path=char_path, interface=CHAR_IFACE, member="StartNotify")
+        if state:
+            state.connection(True)
         print("Streaming avviato — Ctrl+C per uscire.\n", flush=True)
         await disconnected.wait()
         print("\nDispositivo disconnesso: riconnettilo dalla GUI, resto in attesa...")
     finally:
+        if state:
+            state.connection(False)
         bus.remove_message_handler(handler)
         if not disconnected.is_set():
             try:  # lascia la connessione della GUI aperta, ferma solo le notifiche
                 await call(bus, destination=BLUEZ, path=char_path, interface=CHAR_IFACE, member="StopNotify")
             except Exception:
                 pass
+        for path in matches:
+            try:
+                await add_match(bus, path, remove=True)
+            except Exception:
+                pass
 
 
-async def main(address: str | None) -> None:
+async def main(address: str | None, state=None) -> None:
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     stats = FrameStats()
     t_start = time.perf_counter()
     try:
         while True:
             try:
-                await run_session(bus, stats, address)
+                await run_session(bus, stats, address, state)
             except RuntimeError as exc:
+                if state:
+                    state.connection(False, str(exc))
                 print(f"Errore BlueZ: {exc} — riprovo tra 2s")
             await asyncio.sleep(2.0)
     finally:
@@ -208,11 +231,74 @@ async def main(address: str | None) -> None:
         bus.disconnect()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ricevitore BLE IMU_BTN (connessione gestita dalla GUI di Ubuntu)")
-    parser.add_argument("--address", help="indirizzo MAC della scheda (default: cerca per nome IMU_BTN)")
-    args = parser.parse_args()
+async def demo(state):
+    """Sensori sintetici, stesso percorso di fusione e stessa stampa del BLE."""
+    print("DEMO SINTETICA: nessun dispositivo BLE utilizzato", flush=True)
+    state.connection(True)
+    stats = FrameStats()
+    start = time.monotonic()
+    previous = from_euler(0, 0, 0)
+    last = start
+    held_mag = np.array([24., 0., 39.])
+    last_mag = start
     try:
-        asyncio.run(main(args.address))
-    except KeyboardInterrupt:
-        print("Interrotto dall'utente. Ciao!")
+        while True:
+            now = time.monotonic()
+            t = max(0., now-start-2.5)
+            q = from_euler(0.4*math.sin(t*0.7), 0.25*math.sin(t*0.5), t*0.22)
+            dt = max(now-last, 1e-6)
+            delta = multiply(conjugate(previous), q)
+            if delta[0] < 0:
+                delta = -delta
+            n = np.linalg.norm(delta[1:])
+            gyro = np.zeros(3) if n < 1e-12 else delta[1:]/n * (2*math.atan2(n, delta[0])/dt)
+            acc = matrix(q).T @ [0, 0, 9.80665]
+            if now-last_mag >= 0.1:
+                held_mag = matrix(q).T @ [24., 0., 39.]
+                # Minima variazione sintetica rende osservabile l'aggiornamento a riposo.
+                held_mag += np.array([1e-4*math.sin(now), 0, 0])
+                last_mag = now
+            values = (1 << (int(t) % 7), *acc, *np.degrees(gyro), *(held_mag*[1, -1, 1]))
+            state.feed(values, now)
+            print(format_frame(stats.tick(), values), flush=True)
+            previous, last = q, now
+            await asyncio.sleep(0.01)
+    finally:
+        state.connection(False)
+
+
+async def run(args, state):
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, task.cancel)
+    try:
+        await (demo(state) if args.demo else main(args.address, state))
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Ricevitore BLE IMU_BTN con visualizzatore locale")
+    parser.add_argument("--address", help="MAC scheda già connessa dalla GUI Ubuntu")
+    parser.add_argument("--demo", action="store_true", help="Sensori SINTETICI, nessun accesso BLE")
+    parser.add_argument("--no-web", action="store_true", help="Solo stampa terminale, come prima")
+    parser.add_argument("--port", type=int, default=5000, help="Porta loopback (default: 5000)")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("La porta deve essere compresa tra 1 e 65535")
+    state = Orientation(demo=args.demo)
+    web = None
+    try:
+        if not args.no_web:
+            web = Viewer(state, args.port)
+            web.start()
+            print(f"Visualizzatore sul NUC: http://127.0.0.1:{args.port} — nessun reloader", flush=True)
+        asyncio.run(run(args, state))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("Interrotto: notifiche e visualizzatore arrestati, connessione GUI invariata.")
+    except Exception as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if web:
+            web.close()

@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="reset-token" content="{{ token }}"><title>IMU · Banco di prova</title>
+<link rel="icon" href="data:,"><link rel="stylesheet" href="/static/style.css?v=1">
+<script type="importmap">{"imports":{"three":"/static/vendor/build/three.module.js","three/addons/":"/static/vendor/jsm/"}}</script>
+</head><body>
+<header><div><span class="eyebrow">HALO / TEST PRELIMINARI</span><h1>Orientamento IMU</h1></div><span id="source" class="badge">IN ATTESA</span></header>
+<main><section class="instrument"><div class="topline"><span id="status">In attesa di dati</span><span id="mode">—</span></div><div id="scene"><div id="empty">Connetti IMU_BTN dalla GUI di Ubuntu</div></div><div class="legend">X · muso &nbsp; Y · ala sinistra &nbsp; Z · dorso<br>Rotazione relativa · nessuna traslazione stimata</div></section>
+<aside><div class="metrics"><div><label>ROLL / X</label><strong id="roll">—</strong></div><div><label>PITCH / Y</label><strong id="pitch">—</strong></div><div><label>YAW / Z</label><strong id="yaw">—</strong></div></div><button id="reset" disabled>Azzera riferimento</button><p id="feedback" aria-live="polite">Tieni la scheda ferma per almeno 1,5 s all'avvio.</p><div class="details"><span>Notifiche ricevute</span><b id="hz">— Hz</b><span>Età del dato</span><b id="age">—</b></div><h2>Pulsanti · D2–D8</h2><div id="buttons"></div><p id="warning">Il riferimento iniziale verrà acquisito automaticamente.</p></aside></main>
+<footer><span>Madgwick · quaternione relativo</span><span>BLE dalla GUI Ubuntu / visualizzazione indipendente</span></footer>
+<script type="module" src="/static/app.js?v=3"></script></body></html>

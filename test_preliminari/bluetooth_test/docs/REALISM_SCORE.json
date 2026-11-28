@@ -1,0 +1,19 @@
+{
+  "ambito": "Valutazione soggettiva rispetto al riferimento diagnostico, non fotorealismo architettonico",
+  "views": [
+    {
+      "name": "strumento",
+      "reference": "docs/ART_DIRECTION.md",
+      "capture": "docs/compare_strumento.png",
+      "scores": {
+        "geometry": 8,
+        "objects": 8,
+        "materials": 7,
+        "lighting": 7,
+        "camera_match": 8,
+        "artifacts": 9
+      },
+      "notes": "Tutti gli elementi diagnostici presenti. Riflessi eccessivi iniziali corretti con rugosità; cerchi di riferimento volutamente discreti. Simbolo parametrico, non aeromobile realistico."
+    }
+  ]
+}
