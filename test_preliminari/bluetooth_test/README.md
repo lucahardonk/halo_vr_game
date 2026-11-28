@@ -110,10 +110,11 @@ LED integrato: **acceso = connesso**, spento = in advertising, lampeggio veloce 
 sudo apt install -y bluez python3-venv     # di solito già presenti
 sudo systemctl enable --now bluetooth
 
-cd test_preliminari/bluetooth_test
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# venv unico dei test preliminari (una volta sola, installa anche bleak)
+~/Documents/halo_vr_game/test_preliminari/setup_venv.sh
+
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
+cd ~/Documents/halo_vr_game/test_preliminari/bluetooth_test
 python test_receiver.py
 ```
 

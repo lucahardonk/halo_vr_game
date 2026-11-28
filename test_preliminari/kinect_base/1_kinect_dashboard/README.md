@@ -117,11 +117,11 @@ arecord -l
 ## 2 — Setup Python (venv)
 
 ```bash
-# crea il venv (se non esiste già)
-python3 -m venv ~/.venvs/halo_vr_game
+# crea/aggiorna il venv unico dei test preliminari (tutte le dipendenze)
+~/Documents/halo_vr_game/test_preliminari/setup_venv.sh
 
 # attiva
-source ~/.venvs/halo_vr_game/bin/activate
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 
 # installa le dipendenze della dashboard
 pip install -r ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard/requirements.txt
@@ -134,7 +134,7 @@ pip install -r ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_da
 ## 3 — Avvio
 
 ```bash
-source ~/.venvs/halo_vr_game/bin/activate
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard
 python app.py
 ```

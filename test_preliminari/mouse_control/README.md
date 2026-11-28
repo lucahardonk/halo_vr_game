@@ -48,7 +48,9 @@ distorsione nulla.
 
 ```bash
 sudo apt install -y libfreenect-dev
-pip install -r requirements.txt
+~/Documents/halo_vr_game/test_preliminari/setup_venv.sh      # venv unico, una volta sola
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
+cd ~/Documents/halo_vr_game/test_preliminari/mouse_control
 python3 mouse_control.py --tag-size 0.05      # lato del quadrato NERO del tag, in metri
 ```
 

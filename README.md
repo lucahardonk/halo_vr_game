@@ -66,8 +66,8 @@ Verifica: `arecord -l` → deve comparire un dispositivo "Kinect".
 ### Setup Python
 
 ```bash
-python3 -m venv ~/.venvs/halo_vr_game
-source ~/.venvs/halo_vr_game/bin/activate
+~/Documents/halo_vr_game/test_preliminari/setup_venv.sh
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 ```
 
 ---
@@ -77,7 +77,7 @@ source ~/.venvs/halo_vr_game/bin/activate
 **Feature:** RGB · Depth · IR · tilt motore · LED · accelerometro real-time · direzione microfono
 
 ```bash
-source ~/.venvs/halo_vr_game/bin/activate
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/1_kinect_dashboard
 pip install -r requirements.txt
 python app.py
@@ -93,7 +93,7 @@ Documentazione completa (opzioni CLI, API, troubleshooting): [`1_kinect_dashboar
 **Feature:** tag36h11 · overlay assi X/Y/Z · posa 6DOF · FPS counter
 
 ```bash
-source ~/.venvs/halo_vr_game/bin/activate
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 cd ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose
 pip install -r requirements.txt
 python apriltag_pose.py           # Kinect

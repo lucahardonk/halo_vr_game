@@ -1,2 +1,11 @@
-numpy
-opencv-contrib-python>=4.8,<5
+# Dipendenze di TUTTI i test preliminari, per il venv unico test_preliminari/.venv
+# Uso:  ./setup_venv.sh   (oppure: pip install -r requirements.txt con il venv attivo)
+#
+# Pacchetti di sistema (Ubuntu) da installare prima:
+#   sudo apt install python3-venv libfreenect-dev portaudio19-dev kinect-audio-setup bluez
+#
+# Ogni test ha il suo requirements.txt: quando ne aggiungi uno nuovo, aggiungi qui la riga -r.
+-r kinect_base/1_kinect_dashboard/requirements.txt
+-r kinect_base/2_apriltag_pose/requirements.txt
+-r mouse_control/requirements.txt
+-r bluetooth_test/requirements.txt

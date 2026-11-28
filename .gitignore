@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 
-# Ambienti virtuali (il venv sta in ~/.venvs/halo_vr_game, fuori dal repo)
+# Ambienti virtuali (il venv unico dei test sta in test_preliminari/.venv, creato da setup_venv.sh)
 .venv/
 venv/
 env/

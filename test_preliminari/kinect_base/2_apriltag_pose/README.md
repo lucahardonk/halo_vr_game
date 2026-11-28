@@ -14,7 +14,7 @@ In console stampa (5 volte/s) ID, traslazione `t` in metri, `rvec` in gradi e ro
 
 ```bash
 sudo apt install freenect libfreenect-dev
-source ~/.venvs/halo_vr_game/bin/activate
+source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 pip install -r ~/Documents/halo_vr_game/test_preliminari/kinect_base/2_apriltag_pose/requirements.txt
 ```
 
