@@ -1,3 +1,4 @@
+import {updateCalibration, calibrationOffline} from './calibration.js?v=1';
 import * as THREE from 'three';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
@@ -59,9 +60,9 @@ const invBasis=basis.clone().invert();
 const raw=new THREE.Quaternion();
 let lastValid=false, frames=0;
 function applyQuaternion(q){raw.set(q[1],q[2],q[3],q[0]).normalize();pose.quaternion.copy(basis).multiply(raw).multiply(invBasis);}
-const labels={attesa:'In attesa di dati',inizializzazione:'Inizializzazione · tieni ferma la scheda',stale:'Dati non aggiornati',disconnesso:'Scheda disconnessa',valido:'Orientamento disponibile'};
+const labels={calibrazione:'Completa la calibrazione guidata',attesa:'In attesa di dati',inizializzazione:'Inizializzazione · tieni ferma la scheda',stale:'Dati non aggiornati',disconnesso:'Scheda disconnessa',valido:'Orientamento disponibile'};
 for(let i=0;i<7;i++){const s=document.createElement('span');s.textContent=`D${i+2}`;$('buttons').appendChild(s);}
-function display(s){lastValid=Boolean(s.valid);pose.visible=lastValid;$('empty').style.display=lastValid?'none':'grid';$('empty').textContent=s.error||labels[s.status]||'Dati non disponibili';$('status').textContent=labels[s.status]||'Server non raggiungibile';$('mode').textContent=s.valid?s.mode:'—';$('reset').disabled=!lastValid;
+function display(s){updateCalibration(s.calibration);lastValid=Boolean(s.valid);pose.visible=lastValid;$('empty').style.display=lastValid?'none':'grid';$('empty').textContent=s.error||labels[s.status]||'Dati non disponibili';$('status').textContent=labels[s.status]||'Server non raggiungibile';$('mode').textContent=s.valid?s.mode:'—';$('reset').disabled=!lastValid;
 $('source').textContent=s.demo?'DEMO · DATI SINTETICI':'BLE · SENSORI REALI';$('source').classList.toggle('demo',s.demo);
 for(const [i,id] of ['roll','pitch','yaw'].entries())$(id).textContent=s.valid?`${s.rpy[i].toFixed(1)}°`:'—';
 $('hz').textContent=`${s.hz??0} Hz`;$('age').textContent=s.age==null?'—':`${Math.round(s.age*1000)} ms`;
@@ -70,7 +71,7 @@ $('warning').textContent=s.warning||'Nessun orientamento valido';
 if(s.valid)applyQuaternion(s.quaternion);
 }
 let stopped=false;
-async function poll(){if(stopped)return;try{const r=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(1000)});if(!r.ok)throw Error('HTTP');display(await r.json());}catch{pose.visible=false;lastValid=false;$('reset').disabled=true;$('empty').style.display='grid';$('empty').textContent='Server non raggiungibile';$('status').textContent='Visualizzatore scollegato';for(const id of ['roll','pitch','yaw'])$(id).textContent='—';[...$('buttons').children].forEach(el=>el.className='unknown');$('hz').textContent='—';$('age').textContent='—';}setTimeout(poll,50);}
+async function poll(){if(stopped)return;try{const r=await fetch('/api/state',{cache:'no-store',signal:AbortSignal.timeout(1000)});if(!r.ok)throw Error('HTTP');display(await r.json());}catch{calibrationOffline();pose.visible=false;lastValid=false;$('reset').disabled=true;$('empty').style.display='grid';$('empty').textContent='Server non raggiungibile';$('status').textContent='Visualizzatore scollegato';for(const id of ['roll','pitch','yaw'])$(id).textContent='—';[...$('buttons').children].forEach(el=>el.className='unknown');$('hz').textContent='—';$('age').textContent='—';}setTimeout(poll,50);}
 $('reset').addEventListener('click',async()=>{try{const r=await fetch('/api/reset',{method:'POST',headers:{'X-Reset-Token':document.querySelector('meta[name=reset-token]').content},signal:AbortSignal.timeout(1500)});if(!r.ok)throw Error();display((await r.json()).state);$('feedback').textContent='Riferimento azzerato. Non è una calibrazione dei sensori.';}catch{$('feedback').textContent='Azzeramento non disponibile: controlla lo stato dei dati.';}});
 const resize=new ResizeObserver(()=>{const w=host.clientWidth,h=host.clientHeight;renderer.setSize(w,h);composer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();});resize.observe(host);
 renderer.setAnimationLoop(()=>{composer.render();frames++;});poll();

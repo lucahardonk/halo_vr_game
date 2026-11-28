@@ -13,6 +13,8 @@ import sys
 import time
 import signal
 import math
+from pathlib import Path
+from calibration import Calibration, ProfileStore
 
 import numpy as np
 from orientation import Orientation, from_euler, conjugate, multiply, matrix
@@ -150,6 +152,8 @@ async def add_match(bus: MessageBus, path: str, remove=False) -> None:
 
 async def run_session(bus: MessageBus, stats: FrameStats, address: str | None, state=None) -> None:
     dev_path, dev_props, char_path, char_props = await wait_for_device(bus, address)
+    if state:
+        state.bind_device(_val(dev_props, "Address"))
     print(f"Trovato {_val(dev_props, 'Alias')} [{_val(dev_props, 'Address')}] connesso.")
     mtu = _val(char_props, "MTU")
     if mtu is not None:
@@ -241,24 +245,37 @@ async def demo(state):
     last = start
     held_mag = np.array([24., 0., 39.])
     last_mag = start
+    phase_start = start
+    previous_phase = None
     try:
         while True:
             now = time.monotonic()
-            t = max(0., now-start-2.5)
-            q = from_euler(0.4*math.sin(t*0.7), 0.25*math.sin(t*0.5), t*0.22)
+            phase = state.calibration.phase if state.calibration else 'pronto'
+            if phase != previous_phase:
+                phase_start, previous_phase = now, phase
+            t = now-phase_start
+            if phase == 'mag':
+                q = from_euler(t*.71, 1.5*math.sin(t*.37), t*1.13)
+            elif phase == 'pronto':
+                q = from_euler(.4*math.sin(t*.7), .25*math.sin(t*.5), t*.22)
+            else:
+                q = from_euler(0, 0, 0)
             dt = max(now-last, 1e-6)
             delta = multiply(conjugate(previous), q)
             if delta[0] < 0:
                 delta = -delta
             n = np.linalg.norm(delta[1:])
             gyro = np.zeros(3) if n < 1e-12 else delta[1:]/n * (2*math.atan2(n, delta[0])/dt)
-            acc = matrix(q).T @ [0, 0, 9.80665]
+            acc = matrix(q).T @ [0, 0, 9.80665] + .001*np.sin(now*31)*np.array([1, .5, .3])
             if now-last_mag >= 0.1:
                 held_mag = matrix(q).T @ [24., 0., 39.]
                 # Minima variazione sintetica rende osservabile l'aggiornamento a riposo.
                 held_mag += np.array([1e-4*math.sin(now), 0, 0])
                 last_mag = now
-            values = (1 << (int(t) % 7), *acc, *np.degrees(gyro), *(held_mag*[1, -1, 1]))
+            distortion = np.array([[1.2, .12, .05], [.12, .85, -.08], [.05, -.08, 1.05]])
+            measured_mag = distortion @ held_mag + [12, -8, 5]
+            measured_gyro = np.degrees(gyro) + [1.1, -.7, .45] + .01*math.sin(now*19)
+            values = (1 << (int(t) % 7), *acc, *measured_gyro, *(measured_mag*[1, -1, 1]))
             state.feed(values, now)
             print(format_frame(stats.tick(), values), flush=True)
             previous, last = q, now
@@ -286,7 +303,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("La porta deve essere compresa tra 1 e 65535")
-    state = Orientation(demo=args.demo)
+    calibration = Calibration(ProfileStore(Path(__file__).resolve().parent / '.calibration'),
+                              demo=args.demo, device='SIMULATED' if args.demo else args.address)
+    state = Orientation(demo=args.demo, calibration=calibration)
     web = None
     try:
         if not args.no_web:

@@ -1,0 +1,69 @@
+{
+  "ambiente": "Simulazione locale; nessun sensore reale; grafica invariata",
+  "checks": [
+    {
+      "nome": "attesa senza avanzamento",
+      "superato": true
+    },
+    {
+      "nome": "countdown da dati validi",
+      "superato": true
+    },
+    {
+      "nome": "movimento azzera countdown",
+      "superato": true
+    },
+    {
+      "nome": "gyro sintetico stimato",
+      "superato": true
+    },
+    {
+      "nome": "raccolta insufficiente rifiutata",
+      "superato": true
+    },
+    {
+      "nome": "raccolta planare rifiutata",
+      "superato": true
+    },
+    {
+      "nome": "deduplicazione mantiene campioni sufficienti",
+      "superato": true
+    },
+    {
+      "nome": "successo salva profilo demo",
+      "superato": true
+    },
+    {
+      "nome": "nessun riferimento durante rotazioni",
+      "superato": true
+    },
+    {
+      "nome": "riferimento acquisito solo dopo quiete",
+      "superato": true
+    },
+    {
+      "nome": "reset distinto e disponibile",
+      "superato": true
+    },
+    {
+      "nome": "annulla conserva profilo",
+      "superato": true
+    },
+    {
+      "nome": "stale ferma acquisizione",
+      "superato": true
+    },
+    {
+      "nome": "disconnessione visibile",
+      "superato": true
+    },
+    {
+      "nome": "demo sempre esplicita",
+      "superato": true
+    },
+    {
+      "nome": "nessun errore browser",
+      "superato": true
+    }
+  ]
+}

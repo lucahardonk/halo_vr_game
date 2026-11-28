@@ -188,8 +188,9 @@ python test_receiver.py --address 18:FE:03:D9:D4:4B
 
 Connetti `IMU_BTN` da **Impostazioni → Bluetooth → Connection ON**, come prima.
 Apri **nel browser dello stesso NUC**: **http://127.0.0.1:5000**.
-Tieni la scheda ferma per almeno 1,5 s: il riferimento viene acquisito automaticamente.
-Il pulsante **Azzera riferimento** prende l'orientamento corrente come nuovo zero.
+Segui prima il riquadro **Calibrazione guidata** (istruzioni nella sezione 12): gyro a ogni
+avvio, magnetometro se non esiste un profilo valido della scheda. Dopo la calibrazione tieni
+la scheda ferma per almeno 1,5 s per il riferimento. **Azzera riferimento** cambia solo lo zero.
 
 Varianti (una sola istanza per scheda):
 
@@ -197,7 +198,7 @@ Varianti (una sola istanza per scheda):
 python test_receiver.py --demo          # dati SINTETICI, nessun accesso a BlueZ
 python test_receiver.py --no-web        # solo terminale
 python test_receiver.py --port 5050      # se la porta 5000 è occupata
-python -m unittest -v test_orientation.py
+python -m unittest -v test_orientation.py test_calibration.py
 ```
 
 Con `--port 5050`, l'indirizzo sul NUC diventa `http://127.0.0.1:5050`.
@@ -235,8 +236,8 @@ sperimentale della tua scheda. `ahrs==0.4.0` resta una dipendenza per i test di 
   Fusione al massimo a 100 Hz; eventuali passi numerici intermedi non sono nuovi campioni.
 - Inizializzazione: almeno 1,5 s di accel prossima a 1 g (±0,8 m/s²), gyro sotto 3 °/s e
   variazione accel tra notifiche sotto 0,3 m/s². Media delle letture, tilt e heading iniziali;
-  senza mag si inizializza lo yaw a zero. Questa è una verifica di quiete, **non** stima del
-  bias gyro né certificazione della qualità del campo magnetico.
+  senza mag si inizializza lo yaw a zero. Questa fase acquisisce il riferimento **dopo** la calibrazione: la stima del bias
+  gyro è svolta separatamente dal wizard, descritto nella sezione 12.
 - Quaternione normalizzato a ogni aggiornamento; nessuna doppia integrazione e nessuna
   stima di traslazione: «posizione iniziale» significa esclusivamente orientamento.
 
@@ -300,7 +301,7 @@ non promette oltre 100 Hz di orientamenti indipendenti né precisione temporale 
 - Backend non raggiungibile: interfaccia scollegata e dati nascosti.
 - `Azzera riferimento` cambia solo il riferimento: **non calibra** hard/soft iron, bias gyro,
   assi o disturbi da NUC, cavi, magneti e oggetti metallici. Accelerazioni lineari possono
-  contaminare la stima della gravità. Prima di misure affidabili serve calibrazione dedicata.
+  contaminare la stima della gravità. La calibrazione dedicata del wizard è distinta dal reset e non elimina disturbi variabili.
 
 Ricezione e fusione girano nell'event loop asyncio originale; Flask in un thread separato,
 snapshot protetti da lock. Il browser legge lo stato circa 20 volte/s e disegna con
@@ -321,3 +322,149 @@ Il reset usa POST e token per pagina; non è attivabile da GET. Solo loopback, n
 Nessun test eseguito qui legge i tuoi sensori. La demo è esplicitamente marcata e attraversa
 lo stesso filtro delle letture reali; i risultati sintetici non certificano accuratezza,
 segni fisici, throughput BLE o compatibilità del tuo specifico adattatore BlueZ su Ubuntu 26.
+
+
+### 12. Calibrazione guidata: procedura operatore
+
+**Madgwick, guadagno, temporizzazione AHRS, accelerometro e firmware sono invariati.**
+La nuova calibrazione è uno stadio precedente al filtro, non un diverso algoritmo di fusione.
+
+**Sul NUC**, arresta l'eventuale processo precedente con Ctrl+C, poi:
+
+```bash
+cd ~/Documents/halo_vr_game
+git pull --ff-only origin main
+source test_preliminari/.venv/bin/activate
+python -m pip install -r test_preliminari/bluetooth_test/requirements.txt
+cd test_preliminari/bluetooth_test
+python test_receiver.py --address 18:FE:03:D9:D4:4B
+```
+
+Connetti la scheda esclusivamente dalla GUI Bluetooth Ubuntu e apri nel browser **del NUC**
+`http://127.0.0.1:5000`. Non occorre ricaricare il firmware. Nessuna nuova dipendenza è richiesta
+rispetto al visualizzatore precedente. Non avviare due ricevitori sulla stessa scheda.
+
+1. **Giroscopio a ogni avvio:** appoggia la scheda su un piano stabile. Non tenerla in mano.
+   Il countdown richiede **4 secondi di quiete valida**, non 4 secondi di orologio qualsiasi.
+   Movimento/vibrazioni azzerano la finestra con una spiegazione; dati assenti, scaduti o
+   ripetuti senza variazioni non fanno avanzare il conteggio. Il bias non deve essere zero:
+   la dispersione di gyro e accelerometro rileva il movimento.
+2. **Magnetometro:** se non esiste un profilo valido, premi **Avvia / rifai magnetometro**.
+   Allontanati da magneti, metallo, NUC e cavi di potenza. Ruota **lentamente** su tutti e tre
+   gli assi e ribalta più volte la scheda, come per esplorare l'intera superficie di una sfera.
+   Non basta disegnare un cerchio sul tavolo. Vedi campioni utili, settori esplorati e facce
+   mancanti (±X/±Y/±Z nel sistema sensori). Questi sono indicatori geometrici approssimati del
+   campo campionato, non un orientamento già calibrato.
+3. Premi **Verifica raccolta** dopo almeno **180 campioni utili** e buona copertura.
+   Tipicamente servono decine di secondi; la durata da sola non completa la calibrazione.
+   Il backend verifica ellissoide, condizionamento, copertura e residui su dati separati.
+   Se rifiuta, leggi il messaggio e premi **Riprova** per una nuova raccolta. Non continuare
+   una raccolta fallita pensando che il tempo possa migliorarla.
+4. Quando accettata, **appoggia nuovamente la scheda e tienila ferma**. Filtro e riferimento
+   vengono reinizializzati; l'aeroplano resta nascosto finché non si acquisisce il riferimento
+   stabile. Non viene preso un riferimento mentre ruoti la scheda nel wizard.
+5. **Azzera riferimento** resta distinto: cambia solo l'orientamento relativo di visualizzazione.
+   **Ricalibra giroscopio** e **Avvia / rifai magnetometro** permettono nuove calibrazioni.
+   **Annulla** non elimina il profilo magnetico precedente. Se esistono bias e profilo validi,
+   il sistema torna alla fase di riferimento; al primo avvio senza profilo rimane in attesa
+   della calibrazione, non mostra un falso orientamento valido.
+
+Ai successivi avvii il **gyro viene sempre ricalibrato**, mentre il profilo magnetico valido
+viene riutilizzato e segnalato nella UI: non devi rifare il magnetometro ogni volta. Rifallo
+se cambia il montaggio o l'ambiente magnetico stabile. Un errore di fit/salvataggio o Annulla
+non sovrascrive il profilo precedente. Timeout di 3 minuti o limite di 1200 campioni non
+certificano qualità: richiedono verifica/riprova. Una perdita dati durante la raccolta mag
+la invalida e richiede una nuova raccolta, per non mescolare sessioni diverse.
+
+`--demo` esegue la stessa procedura con **dati sintetici esplicitamente etichettati**:
+quiete simulata durante gyro/riferimento, rotazioni complete durante il magnetometro, poi
+animazione. In demo la raccolta automatica richiede circa un minuto; la qualità viene comunque
+verificata. `--no-web` mantiene la stampa terminale, ma per completare il wizard senza profilo
+serve avviare il visualizzatore senza questa opzione.
+
+### 13. Metodo implementato, assi e persistenza
+
+**Ordine esatto della pipeline:** payload grezzo → `rev2_axes` già esistente → calibrazione
+→ Madgwick già esistente. Per la Rev2: accelerazione invariata in m/s², gyro invariato negli
+assi ma convertito in **rad/s**, magnetometro `(mx, -my, mz)` in **µT**. La calibrazione usa
+questo sistema, non riapplica il mapping al dato corretto. I valori stampati restano grezzi.
+
+**Gyro:** media aritmetica di letture grezze mappate in rad/s nella finestra accettata,
+poi `g_corretto = g_mappato - bias`. Acquisizione al massimo circa 50 Hz; almeno 100 letture
+non identiche e 4 secondi validi, contributo temporale per lettura limitato a 50 ms. Norma
+accel entro 0,8 m/s² da 1 g; deviazione standard per asse accel ≤0,10 m/s² e gyro ≤0,25 °/s;
+variazione accel rispetto all'inizio ≤0,35 m/s² e gyro rispetto alla mediana ≤0,8 °/s.
+La norma gyro è ammessa fino a 15 °/s come limite di sicurezza, non richiesta vicina a zero.
+Non calibra l'accelerometro. Un moto uniforme molto lento attorno alla verticale può essere
+indistinguibile da un bias senza un riferimento esterno: rispettare l'istruzione del piano
+fermo. Bias molto grandi, rumore o vibrazioni oltre le soglie richiedono indagine, non vengono
+assorbiti silenziosamente come calibrazione. Il bias non viene persistito.
+
+**Magnetometro: vera correzione hard iron + soft iron SPD non diagonale.**
+Il modello è `m_corretto = A (m_mappato - b)`, con offset `b` e matrice simmetrica definita
+positiva `A`, non semplice sottrazione di offset né sole scale diagonali.
+
+- Campionamento al massimo circa 10 Hz (intervallo minimo 95 ms), deduplicazione globale
+  su celle da 0,2 µT e distanza minima 0,2 µT. I frame BLE ripetuti non aggiungono qualità.
+  Filtro preliminare sulla norma (1–500 µT), raccolta limitata a 1200 punti e 3 minuti.
+- Centro/scala numerici robusti (mediana), regressione quadratica dell'ellissoide normalizzato
+  `xᵀQx+dᵀx=1`. Ricerca robusta tipo RANSAC con 100 candidati (sottocampioni da 24 punti),
+  soglia di residuo radiale 6%, almeno 85% inlier; quattro rifiniture sui soli inlier.
+- Un **20% holdout deterministico** non entra nel fit. Richiesti almeno 85% dei punti holdout
+  entro 8% di errore radiale e RMS dei punti accettati ≤2,5%. La contaminazione moderata viene
+  esclusa; disturbi diffusi, raccolte planari/degeneri o fit insufficienti vengono rifiutati.
+- Matrice del problema con condizionamento ≤10⁴, ellissoide SPD con rapporto autovalori ≤25,
+  quindi condizionamento della correzione ≤5. Centro interno ai limiti campionati, raggio
+  equivalente tra 5 e 200 µT, offset di norma ≤500 µT. I limiti sono conservativi, non standard
+  di certificazione: possono rifiutare sensori molto distorti anziché accettare una correzione
+  pericolosamente instabile.
+- Copertura finale sui punti corretti: almeno 20/26 settori con almeno 3 punti ciascuno,
+  almeno 5 punti in ciascuna faccia dominante ±X/±Y/±Z e rapporto autovalori della covarianza
+  ≥0,15. Una covarianza grezza quasi planare viene già rifiutata prima del fit.
+- Dalla matrice ellissoidale si ricava la **radice quadrata SPD** tramite autodecomposizione.
+  La scala globale non è identificabile dalla sola rotazione: si impone `det(A)=1` (volume
+  conservato), senza fingere una misura assoluta nota del campo terrestre. Madgwick già
+  normalizza il campo, quindi conta la direzione. Un'eventuale rotazione/disallineamento
+  rigido del sensore non è identificabile con il solo fit sferico e non è corretto dal wizard.
+
+Fonti tecniche del metodo (non codice copiato):
+[Egri, Taming Hard and Soft Iron](https://laszloegri.github.io/magneto/) e
+[MathWorks, Magnetometer Calibration](https://www.mathworks.com/help/nav/ug/magnetometer-calibration.html).
+Il metodo robusto e le soglie sopra descritti sono quelli effettivamente in `calibration.py`.
+Non è il solver MATLAB `magcal` né un'implementazione del vincolo di Li–Griffiths.
+
+**Persistenza locale:** `.calibration/reale/<MAC>.json` oppure
+`.calibration/demo/SIMULATED.json`, sotto `test_preliminari/bluetooth_test` **sul NUC**.
+Directory esclusa da git tramite `.gitignore` locale. Scrittura atomica con file temporaneo
+(privato) e replace; lettura validata per schema versione 1, identità dispositivo, modalità,
+mapping, unità µT, forme/valori finiti, SPD, condizionamento, scala e metriche di qualità.
+Un file corrotto/incompatibile viene ignorato con avviso e non sblocca la calibrazione.
+L'identità reale viene confermata dalle proprietà BlueZ prima della sottoscrizione, anche
+se non passi `--address`. Un cambio scheda carica un profilo distinto e richiede nuovo gyro.
+Non copiare manualmente il profilo di una scheda su un'altra.
+
+**Nessun accumulo:** ogni nuova stima parte dai dati grezzi mappati e sostituisce il parametro
+solo dopo validazione. Non si calibra il risultato già corretto. Il mag nullo resta nullo per
+preservare il fallback IMU esistente. Quando una calibrazione cambia, il solo stato del filtro
+viene azzerato; le sue equazioni, beta e dt non vengono modificati. Il riferimento è acquisito
+successivamente in quiete, non durante la raccolta.
+
+### 14. Verifica della calibrazione e limiti
+
+Esegui i test sul venv con `python -m unittest -v test_orientation.py test_calibration.py`.
+I test coprono bias non nullo, movimento, assenza/staleness/duplicati, distorsione SPD non
+diagonale nota, recupero su dati indipendenti, outlier moderati ed eccessivi, raccolte
+planari/degeneri, persistenza/isolamento, applicazione singola prima di Madgwick, quaternione
+normalizzato e API con annulla/riprova/reset separato.
+
+Il test browser `scripts/verify_calibration_browser.py` usa campioni sintetici e clock
+controllato alimentando **il backend reale**; non sostituisce gli endpoint del wizard con
+risposte preconfezionate. Verifica successo, fallimento e riprova, movimenti, annulla, dati
+scaduti e disconnessione. Playwright serve soltanto per sviluppo, non per usare il NUC.
+Gli esiti di questa estensione sono in `docs/VERIFICA_CALIBRAZIONE.md`.
+
+**Non verificato su NUC/scheda reali.** La calibrazione non risolve campi magnetici che
+cambiano nel tempo, disturbi elettrici, errori di mapping fisico, temperatura del gyro o
+limiti BLE. Senza timestamp/contatori sensore nel payload, freschezza e deduplicazione sono
+stime conservative: non è possibile certificare l'età fisica dei campioni; letture realmente
+identiche possono bloccare il countdown. Nessuna promessa di eliminazione del drift.

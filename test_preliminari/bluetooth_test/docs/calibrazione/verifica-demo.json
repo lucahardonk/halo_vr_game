@@ -1,0 +1,160 @@
+{
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "checks": [
+    {
+      "name": "demo esplicita",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "nessun orientamento prima inizializzazione",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "sette pulsanti",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "banner demo",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "reset da pulsante",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "reset prossimo a identità",
+      "passato": true,
+      "dettaglio": "[3.5919169111219476, 1.8966280214934532, 3.1989405887094042]"
+    },
+    {
+      "name": "base frontend asse 0 angolo 30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 0 angolo -30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 0 angolo 179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 0 angolo -179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 0 angolo 180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 0 angolo -180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo 30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo -30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo 179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo -179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo 180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 1 angolo -180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo 30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo -30",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo 179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo -179",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo 180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "base frontend asse 2 angolo -180",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "interfaccia stale",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "interfaccia disconnesso",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "interfaccia attesa",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "interfaccia inizializzazione",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "nessun errore browser",
+      "passato": true,
+      "dettaglio": "[]"
+    },
+    {
+      "name": "SIGTERM arresta il processo",
+      "passato": true,
+      "dettaglio": ""
+    },
+    {
+      "name": "server assente nasconde orientamento",
+      "passato": true,
+      "dettaglio": ""
+    }
+  ]
+}

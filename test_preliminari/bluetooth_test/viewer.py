@@ -38,6 +38,16 @@ def create_app(state):
             return jsonify(error='Orientamento non disponibile'), 409
         return jsonify(ok=True, state=state.snapshot())
 
+    @app.post('/api/calibration/<action>')
+    def calibration_action(action):
+        if request.headers.get('X-Reset-Token') != token:
+            return jsonify(error='Richiesta non autorizzata'), 403
+        try:
+            state.calibration_action(action)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 409
+        return jsonify(ok=True, state=state.snapshot())
+
     return app
 
 

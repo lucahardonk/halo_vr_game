@@ -48,6 +48,12 @@ def main():
             page.on('response',lambda r:errors.append(f'HTTP {r.status} {r.url}') if r.status>=400 else None)
             page.goto(url+'/?quality='+('high' if args.gpu else 'low'))
             page.wait_for_function('window.__IMU_VIEW__?.getState().frames > 3',timeout=60000)
+            page.wait_for_function("['2 / 2 · Magnetometro','Calibrazione completata'].includes(document.querySelector('#cal-title').textContent)",timeout=30000)
+            calibration=page.evaluate("fetch('/api/state').then(r=>r.json()).then(s=>s.calibration)")
+            if calibration['phase']=='mag_pronto':
+                page.locator('[data-cal-action=mag]').click()
+                page.wait_for_function("parseInt(document.querySelector('#cal-details').textContent)>=550",timeout=100000)
+                page.locator('[data-cal-action=verifica]').click()
             page.wait_for_function('window.__IMU_VIEW__.getState().visible',timeout=30000)
             renderer=page.evaluate("""() => { const gl=document.querySelector('canvas').getContext('webgl2'); const ext=gl.getExtension('WEBGL_debug_renderer_info'); return gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); }""")
             if args.gpu:check('renderer NVIDIA','NVIDIA' in renderer,renderer)
@@ -86,6 +92,13 @@ def main():
             browser.close()
             (out/'verifica-browser.json').write_text(json.dumps(dict(renderer=renderer,checks=checks),indent=2,ensure_ascii=False))
             print(json.dumps(dict(renderer=renderer,verifiche=len(checks),tutte_passate=True),ensure_ascii=False))
+    except Exception:
+        try:
+            with urllib.request.urlopen(url+'/api/state',timeout=2) as response:
+                (out/'stato-al-fallimento.json').write_text(response.read().decode())
+        except OSError:
+            pass
+        raise
     finally:
         if proc.poll() is None:proc.terminate();proc.wait(timeout=8)
         log.close()

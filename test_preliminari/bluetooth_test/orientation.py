@@ -99,7 +99,8 @@ class Orientation:
     STALE = 0.5
     MAG_TIMEOUT = 0.5
 
-    def __init__(self, demo=False, clock=time.monotonic):
+    def __init__(self, demo=False, clock=time.monotonic, calibration=None):
+        self.calibration = calibration
         self.clock = clock
         self.demo = demo
         self.lock = threading.RLock()
@@ -124,10 +125,34 @@ class Orientation:
         self.mode = "IMU"
         self.stamps.clear()
 
+    def reset_attitude(self):
+        self.q = self.reference = self.last_step = None
+        self.mag_time = self.last_mag = None
+        self.stable.clear()
+
+    def bind_device(self, address):
+        with self.lock:
+            if self.calibration:
+                previous = self.calibration.device
+                self.calibration.bind(address)
+                if previous != self.calibration.device:
+                    self.clear()
+
+    def calibration_action(self, name):
+        with self.lock:
+            if not self.calibration:
+                raise ValueError('Calibrazione non configurata.')
+            generation = self.calibration.generation
+            self.calibration.action(name, self.clock(), self.connected)
+            if generation != self.calibration.generation:
+                self.reset_attitude()
+
     def connection(self, connected, error=None):
         with self.lock:
             if connected != self.connected or error:
                 self.clear()
+            if self.calibration and not connected:
+                self.calibration.interrupt("Scheda disconnessa: riconnettila dalla GUI Ubuntu.")
             self.connected = connected
             self.ever_connected |= connected
             self.error = error
@@ -137,10 +162,14 @@ class Orientation:
         with self.lock:
             if len(values) != 10 or not np.all(np.isfinite(values)):
                 self.invalid += 1
+                if self.calibration:
+                    self.calibration.interrupt("Campione non valido: acquisizione interrotta.")
                 return
             a, g, m = rev2_axes(values[1:4], values[4:7], values[7:10])
             if np.linalg.norm(a) < 1e-6:
                 self.invalid += 1
+                if self.calibration:
+                    self.calibration.interrupt("Campione non valido: acquisizione interrotta.")
                 return
             if self.last is not None and now-self.last > self.STALE:
                 self.clear()  # Nessuna integrazione attraverso un vuoto temporale.
@@ -152,6 +181,14 @@ class Orientation:
             self.stamps.append(now)
             while self.stamps and now-self.stamps[0] > 1:
                 self.stamps.popleft()
+            if self.calibration:
+                generation = self.calibration.generation
+                self.calibration.feed(a, g, m, now)
+                if generation != self.calibration.generation:
+                    self.reset_attitude()
+                if not self.calibration.allowed:
+                    return
+                g, m = self.calibration.corrected(g, m)
             if np.linalg.norm(m) > 1e-6:
                 if self.last_mag is None or not np.array_equal(m, self.last_mag):
                     self.mag_time = now
@@ -175,6 +212,9 @@ class Orientation:
                 avg_m = np.mean([s[2] for s in self.stable], axis=0) if usable_mag else None
                 self.q = initial_attitude(avg_a, avg_m)
                 self.reference = self.q.copy()
+                if self.calibration:
+                    self.calibration.phase = "pronto"
+                    self.calibration.message = "Calibrazione completata. Riferimento iniziale acquisito; puoi muovere la scheda."
                 self.last_step = now
                 self.stable.clear()
                 return
@@ -203,15 +243,18 @@ class Orientation:
                 status = "inizializzazione"
             elif self.connected and self.q is not None:
                 status = "valido"
+            calibration = self.calibration.snapshot(now, self.connected) if self.calibration else None
+            if self.calibration and self.connected and age is not None and age <= self.STALE and not self.calibration.allowed:
+                status = "calibrazione"
             valid = status == "valido"
             relative = unit(multiply(conjugate(self.reference), self.q)) if valid else None
-            return dict(status=status, valid=valid, demo=self.demo, mode=self.mode,
+            return dict(status=status, valid=valid, demo=self.demo, mode=self.mode, calibration=calibration,
                         quaternion=None if relative is None else relative.tolist(),
                         rpy=None if relative is None else euler(relative),
                         buttons=[bool(self.buttons & (1 << i)) for i in range(7)] if age is not None and age <= self.STALE and self.connected else None,
                         hz=sum(now-t <= 1 for t in self.stamps) if self.connected else 0,
                         age=age, frames=self.frames, invalid=self.invalid, resets=self.reset_count,
-                        warning="Magnetometro assente/non aggiornato: yaw soggetto a deriva" if self.mode == "IMU" else "Campo magnetico non calibrato: possibili interferenze",
+                        warning="Magnetometro assente/non aggiornato: yaw soggetto a deriva" if self.mode == "IMU" else ("Profilo magnetico applicato: evita disturbi variabili" if self.calibration and self.calibration.profile else "Campo magnetico non calibrato: possibili interferenze"),
                         error=self.error)
 
     def reset(self):
