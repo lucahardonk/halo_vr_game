@@ -110,22 +110,28 @@ LED integrato: **acceso = connesso**, spento = in advertising, lampeggio veloce 
 sudo apt install -y bluez python3-venv     # di solito già presenti
 sudo systemctl enable --now bluetooth
 
-# venv unico dei test preliminari (una volta sola, installa anche bleak)
+# venv unico dei test preliminari (una volta sola, installa anche dbus-fast)
 ~/Documents/halo_vr_game/test_preliminari/setup_venv.sh
 
 source ~/Documents/halo_vr_game/test_preliminari/.venv/bin/activate
 cd ~/Documents/halo_vr_game/test_preliminari/bluetooth_test
-python test_receiver.py
+python test_receiver.py                 # cerca IMU_BTN per nome
+python test_receiver.py --address 18:FE:03:D9:D4:4B   # oppure per indirizzo
 ```
+
+**La connessione la fai dalla GUI di Ubuntu** (Impostazioni → Bluetooth → `IMU_BTN` → *Connection* ON).
+Lo script **non scansiona e non si connette**: parla con BlueZ via D-Bus, trova `IMU_BTN` già
+connesso, attiva le notifiche e stampa. Se la scheda non è connessa, lo script aspetta e te lo dice.
+Alla chiusura ferma solo le notifiche: la connessione della GUI resta aperta.
 
 Output di esempio:
 ```
 [Hz: 123.4] BTN: 0001010 | Accel: ax=+0.123 ay=-0.456 az=+9.812 | Gyro: gx=+0.01 gy=-0.02 gz=+0.00 | Mag: mx=+12.3 my=-5.6 mz=+8.9
 ```
 Con Ctrl+C lo script si chiude in modo pulito e stampa i frame totali e la frequenza media.
-Se la scheda si disconnette, lo script si riconnette da solo.
+Se la scheda si disconnette, lo script resta in attesa finché non la riconnetti dalla GUI.
 
-Per controllare a mano che il dispositivo sia visibile: `bluetoothctl` → `scan on` → cerca `IMU_BTN`.
+Controllo a mano: `bluetoothctl info 18:FE:03:D9:D4:4B` → deve dire `Connected: yes`.
 
 ---
 
@@ -140,7 +146,8 @@ Per controllare a mano che il dispositivo sia visibile: `bluetoothctl` → `scan
   echo 6 | sudo tee /sys/kernel/debug/bluetooth/hci0/conn_min_interval
   echo 6 | sudo tee /sys/kernel/debug/bluetooth/hci0/conn_max_interval
   ```
-  Esegui i comandi **prima** di avviare lo script (se `conn_max_interval` rifiuta il valore,
+  Esegui i comandi **prima di connettere la scheda dalla GUI** (il valore si applica alle
+  nuove connessioni: se è già connessa, disattiva e riattiva *Connection*) (se `conn_max_interval` rifiuta il valore,
   scrivi prima `conn_min_interval`, come sopra). Con 7,5 ms il massimo teorico è ~133 Hz
   con 1 pacchetto per evento, di più se controller e stack inviano più pacchetti per evento.
 - **MTU:** 37 byte di payload richiedono MTU ≥ 40. BlueZ negozia l'MTU automaticamente.
