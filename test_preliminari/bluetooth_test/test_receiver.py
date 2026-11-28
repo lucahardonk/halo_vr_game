@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ricevitore BLE di test per arduino_test.ino (Nano 33 BLE Sense Rev2).
+"""Ricevitore BLE di test per bluetooth_test.ino (Nano 33 BLE Sense Rev2).
 
 Si connette a "IMU_BTN", si iscrive alla notify e stampa ogni frame:
 pulsanti (7 bit), accelerometro, giroscopio, magnetometro e frequenza (Hz, finestra 1 s).

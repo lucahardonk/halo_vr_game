@@ -1,5 +1,5 @@
 /*
- * arduino_test.ino
+ * bluetooth_test.ino
  * Arduino Nano 33 BLE Sense Rev2 — 7 pulsanti + IMU 9 assi -> BLE notify (37 byte)
  *
  * NOTA IMPORTANTE SULL'IMU:

@@ -1,4 +1,4 @@
-# arduino_test — 7 pulsanti + IMU 9 assi via BLE (Nano 33 BLE Sense Rev2)
+# bluetooth_test — 7 pulsanti + IMU 9 assi via BLE (Nano 33 BLE Sense Rev2)
 
 Firmware di test che legge **7 pulsanti** e **IMU a 9 assi** e invia tutto via **BLE notify**
 (un'unica characteristic, payload binario da 37 byte). Lo script Python `test_receiver.py`
@@ -87,13 +87,13 @@ Da riga di comando (alternativa):
 ```bash
 arduino-cli core install arduino:mbed_nano
 arduino-cli lib install ArduinoBLE Arduino_BMI270_BMM150
-arduino-cli compile --fqbn arduino:mbed_nano:nano33ble arduino_test
-arduino-cli upload  --fqbn arduino:mbed_nano:nano33ble -p /dev/ttyACM0 arduino_test
+arduino-cli compile --fqbn arduino:mbed_nano:nano33ble bluetooth_test
+arduino-cli upload  --fqbn arduino:mbed_nano:nano33ble -p /dev/ttyACM0 bluetooth_test
 ```
 
 ## 4. Caricare il firmware
 
-1. Collega la scheda via USB e apri `arduino_test/arduino_test.ino`.
+1. Collega la scheda via USB e apri `bluetooth_test/bluetooth_test.ino`.
 2. Scegli la scheda **Arduino Nano 33 BLE** e la porta (`/dev/ttyACM0`).
 3. Clicca **Carica**. Se la porta non compare, fai doppio click rapido sul tasto reset
    (modalità bootloader, il LED "pulsa") e riprova.
@@ -110,7 +110,7 @@ LED integrato: **acceso = connesso**, spento = in advertising, lampeggio veloce 
 sudo apt install -y bluez python3-venv     # di solito già presenti
 sudo systemctl enable --now bluetooth
 
-cd firmware/arduino_test
+cd test_preliminari/bluetooth_test
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
